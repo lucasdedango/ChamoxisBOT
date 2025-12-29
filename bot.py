@@ -4,6 +4,7 @@ import asyncio
 import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, TypedDict
+import xml.etree.ElementTree as ET
 
 import aiohttp
 import discord
@@ -34,6 +35,8 @@ PLEX_SERIES = PLEX_ROOT / "series"
 
 # Ton serveur Discord (sync instant)
 GUILD_ID = 369545955252502528
+
+YGG_RSS_URL = "https://www.yggtorrent.org/rss?action=generate&type=subcat&id=2183&passkey=DSlTTJdD6iQndGp8z4qeI4sG1LobRvKK"
 
 # Extensions vidéo
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".ts"}
@@ -163,6 +166,14 @@ class QbitClient:
             return None
         return items[0]
 
+    async def set_location(self, info_hash: str, location: Path):
+        data = {"hashes": info_hash, "location": str(location)}
+        await self._post_text("/api/v2/torrents/setLocation", data=data)
+
+    async def rename_file(self, info_hash: str, old: Path, new: Path):
+        data = {"hash": info_hash, "oldPath": old.as_posix(), "newPath": new.as_posix()}
+        await self._post_text("/api/v2/torrents/renameFile", data=data)
+
 qbit = QbitClient(QBIT_URL, QBIT_USER, QBIT_PASS)
 
 # ----------------- PLEX REFRESH -----------------
@@ -237,10 +248,29 @@ def unique_path(dst: Path) -> Path:
             return cand
         i += 1
 
+
+def unique_rel_path(base_dir: Path, rel: Path) -> Path:
+    """
+    Retourne un chemin relatif non existant sous base_dir en ajoutant des suffixes si besoin.
+    """
+    candidate = rel
+    stem = rel.stem
+    suffix = rel.suffix
+    parent = rel.parent
+    i = 1
+    while (base_dir / candidate).exists():
+        candidate = parent / f"{stem}-{i}{suffix}"
+        i += 1
+    return candidate
+
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
 def move_file(src: Path, dst: Path, logs: List[str] | None = None) -> Path:
+    """
+    Ancienne fonction de déplacement local (conservée pour compatibilité).
+    Les imports utilisent désormais l'API qBittorrent pour déplacer/renommer.
+    """
     ensure_dir(dst.parent)
     dst2 = unique_path(dst)
     shutil.move(str(src), str(dst2))
@@ -310,6 +340,13 @@ def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
     return m.group(1).lower()
 
 
+def find_torrent_by_name_sync(items: List[dict], name: str) -> Optional[dict]:
+    for t in items:
+        if t.get("name") == name:
+            return t
+    return None
+
+
 def remember_tracked_torrent(info_hash: str, user: discord.abc.User):
     """
     Enregistre un torrent comme suivi pour un utilisateur précis.
@@ -331,7 +368,36 @@ def check_user_ownership(info_hash: str, user_id: int) -> Tuple[bool, str]:
     return True, ""
 
 
-def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
+def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    root = ET.fromstring(xml_text)
+    channel = root.find("channel")
+    if channel is None:
+        return items
+    for item in channel.findall("item"):
+        title = (item.findtext("title") or "???").strip()
+        link = (item.findtext("link") or "").strip()
+        enclosure = item.find("enclosure")
+        enclosure_url = enclosure.attrib.get("url") if enclosure is not None else ""
+        pub_date = (item.findtext("pubDate") or "").strip()
+        items.append(
+            {
+                "title": title,
+                "link": link,
+                "enclosure": enclosure_url,
+                "pub_date": pub_date,
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def shorten(text: str, max_len: int = 90) -> str:
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
     """
     Retourne (message, did_series, did_movies, moved_files, info_hash)
     """
@@ -346,17 +412,17 @@ def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool
     is_forced_movie = (category == "movies")
 
     if is_series and not is_forced_movie:
-        show, n = import_series(torrent_name, content_root, move_logs)
+        show, n = await import_series(torrent_name, info_hash, content_root, move_logs)
         target_path = PLEX_SERIES / show
         msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
         return msg, True, False, n, info_hash
 
-    display, new_path = import_movie(torrent_name, content_root, move_logs)
+    display, new_path = await import_movie(torrent_name, info_hash, content_root, move_logs)
     msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
     return msg, False, True, 1, info_hash
 
 # ----------------- IMPORT LOGIC -----------------
-def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
+async def import_series(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
     r"""
     Déplace TOUS les fichiers vidéo de la série:
     series\Show\Season XX\Show - SXXEYY.ext
@@ -380,16 +446,25 @@ def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | 
     known.sort(key=lambda x: (x[0], x[1], x[2].name))
     unknown.sort(key=lambda x: x.name)
 
+    target_root = PLEX_SERIES / show
+    ensure_dir(target_root)
+    await qbit.set_location(info_hash, target_root)
+
     moved = 0
     season_counts: Dict[int, int] = {}
 
     # 1) fichiers avec S/E
     for season, ep, f in known:
         season_counts[season] = season_counts.get(season, 0) + 1
-        season_dir = PLEX_SERIES / show / f"Season {season:02d}"
+        season_dir = Path(f"Season {season:02d}")
         new_filename = f"{show} - S{season:02d}E{ep:02d}{f.suffix.lower()}"
-        move_file(f, season_dir / new_filename, move_logs)
+        new_rel = unique_rel_path(target_root, season_dir / new_filename)
+        ensure_dir(target_root / new_rel.parent)
+        rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        await qbit.rename_file(info_hash, rel_old, new_rel)
         moved += 1
+        if move_logs is not None:
+            move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
 
     # 2) fichiers sans S/E -> on devine la saison
     if season_counts:
@@ -404,19 +479,20 @@ def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | 
     ep_counter = max_ep + 1 if max_ep > 0 else 1
 
     for f in unknown:
-        season_dir = PLEX_SERIES / show / f"Season {guessed_season:02d}"
+        season_dir = Path(f"Season {guessed_season:02d}")
         new_filename = f"{show} - S{guessed_season:02d}E{ep_counter:02d}{f.suffix.lower()}"
-        move_file(f, season_dir / new_filename, move_logs)
+        new_rel = unique_rel_path(target_root, season_dir / new_filename)
+        ensure_dir(target_root / new_rel.parent)
+        rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        await qbit.rename_file(info_hash, rel_old, new_rel)
         moved += 1
         ep_counter += 1
-
-    # nettoyage
-    if content_root.is_dir():
-        cleanup_empty_dirs(content_root)
+        if move_logs is not None:
+            move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
 
     return show, moved
 
-def import_movie(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
+async def import_movie(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
     r"""
     Déplace le plus gros fichier vidéo en:
     movies\Title (Year)\Title (Year).ext
@@ -434,11 +510,17 @@ def import_movie(torrent_name: str, content_root: Path, move_logs: List[str] | N
     display = f"{title} ({year})" if year else title
 
     movie_dir = PLEX_MOVIES / display
-    new_filename = f"{display}{video.suffix.lower()}"
-    new_path = move_file(video, movie_dir / new_filename, move_logs)
+    ensure_dir(movie_dir)
+    await qbit.set_location(info_hash, movie_dir)
 
-    if content_root.is_dir():
-        cleanup_empty_dirs(content_root)
+    new_filename = f"{display}{video.suffix.lower()}"
+    rel_old = video.relative_to(content_root) if content_root.is_dir() else Path(video.name)
+    new_rel = unique_rel_path(movie_dir, Path(new_filename))
+    await qbit.rename_file(info_hash, rel_old, new_rel)
+    new_path = movie_dir / new_rel
+
+    if move_logs is not None:
+        move_logs.append(f"{movie_dir / rel_old} → {new_path}")
 
     return display, new_path
 
@@ -491,6 +573,48 @@ class AutoImportView(discord.ui.View):
         await interaction.response.edit_message(content=f"Import différé pour `{self.label}`.", view=None)
         self._cleanup()
         self.stop()
+
+
+class RssSelect(discord.ui.Select):
+    def __init__(self, items: List[Dict[str, str]], category: str):
+        options = []
+        for idx, item in enumerate(items):
+            label = shorten(item["title"], 90)
+            options.append(discord.SelectOption(label=label, value=str(idx)))
+        super().__init__(placeholder="Choisis un torrent à ajouter", options=options, min_values=1, max_values=1)
+        self.items = items
+        self.category = category
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        idx = int(self.values[0])
+        item = self.items[idx]
+        url = item.get("enclosure") or item.get("link")
+        if not url:
+            await interaction.response.send_message("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
+            return
+        try:
+            await qbit.add_magnet(url, category=self.category)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ajout qBittorrent échoué: {e}", ephemeral=True)
+            return
+
+        await interaction.response.send_message(f"✅ Ajouté: `{item.get('title', '???')}` (catégorie: {self.category})", ephemeral=True)
+
+        # Tentative de retrouver le hash pour le suivi
+        try:
+            recent = await qbit.list_torrents(limit=30)
+            found = find_torrent_by_name_sync(recent, item.get("title", ""))
+            if found and found.get("hash"):
+                remember_tracked_torrent(found["hash"], interaction.user)
+        except Exception:
+            pass
+
+
+class RssView(discord.ui.View):
+    def __init__(self, items: List[Dict[str, str]], category: str, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        if items:
+            self.add_item(RssSelect(items, category))
 
 
 async def track_download_progress(interaction: discord.Interaction, info_hash: str, label: str):
@@ -570,6 +694,50 @@ async def status(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
+
+@bot.tree.command(name="rssfeed", description="Consulte le flux RSS et ajoute un torrent.")
+@app_commands.describe(
+    url="URL du flux RSS",
+    limit="Nombre d'items à afficher (défaut 5)",
+    kind="movies ou series pour choisir la catégorie qBittorrent",
+)
+async def rssfeed(interaction: discord.Interaction, url: str = YGG_RSS_URL, limit: int = 5, kind: str = "movies"):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with s.get(url) as r:
+                if r.status != 200:
+                    await interaction.followup.send(f"❌ HTTP {r.status} sur le flux RSS.", ephemeral=True)
+                    return
+                xml_text = await r.text()
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible de lire le flux RSS: {e}", ephemeral=True)
+        return
+
+    try:
+        items = parse_rss_feed(xml_text, limit=limit)
+    except ET.ParseError as e:
+        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
+        return
+    if not items:
+        await interaction.followup.send("Flux RSS vide ou non lisible.", ephemeral=True)
+        return
+
+    lines = []
+    for idx, item in enumerate(items, start=1):
+        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
+
+    embed = discord.Embed(
+        title="Flux RSS (YggTorrent)",
+        description="\n".join(lines),
+    )
+    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
+
+    category = "movies" if kind.lower().strip() == "movies" else "series"
+    view = RssView(items, category)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
 @app_commands.describe(
     magnet="Lien magnet",
@@ -629,7 +797,7 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
 
     move_logs: List[str] = []
     try:
-        msg, did_series, did_movies, moved_files, _ = import_torrent_entry(torrent, move_logs)
+        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs)
     except Exception as e:
         await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
         return
@@ -747,7 +915,7 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
         torrent = p["torrent"]
         info_hash = torrent.get("hash", "")
         try:
-            msg, ds, dm, moved, _ = import_torrent_entry(torrent, move_logs)
+            msg, ds, dm, moved, _ = await import_torrent_entry(torrent, move_logs)
             did_series = did_series or ds
             did_movies = did_movies or dm
             moved_items += 1
