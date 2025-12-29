@@ -300,9 +300,9 @@ def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
 
 # ----------------- IMPORT LOGIC -----------------
 def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
-    """
+    r"""
     Déplace TOUS les fichiers vidéo de la série:
-    r"series\Show\Season XX\Show - SXXEYY.ext"
+    series\Show\Season XX\Show - SXXEYY.ext
     Retourne (show_title, nb_fichiers_deplaces)
     """
     show = guess_show_title_from_torrent(torrent_name)
@@ -360,9 +360,9 @@ def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | 
     return show, moved
 
 def import_movie(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
-    """
+    r"""
     Déplace le plus gros fichier vidéo en:
-    r"movies\Title (Year)\Title (Year).ext"
+    movies\Title (Year)\Title (Year).ext
     Retourne (display_name, new_path)
     """
     files = all_video_files(content_root)
