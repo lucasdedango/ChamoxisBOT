@@ -146,6 +146,12 @@ class QbitClient:
             data["category"] = category
         await self._post_text("/api/v2/torrents/add", data=data)
 
+    async def get_torrent_by_hash(self, info_hash: str) -> Optional[dict]:
+        items = await self._get_json("/api/v2/torrents/info", params={"hashes": info_hash})
+        if not items:
+            return None
+        return items[0]
+
 qbit = QbitClient(QBIT_URL, QBIT_USER, QBIT_PASS)
 
 # ----------------- PLEX REFRESH -----------------
@@ -223,10 +229,12 @@ def unique_path(dst: Path) -> Path:
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
-def move_file(src: Path, dst: Path) -> Path:
+def move_file(src: Path, dst: Path, logs: List[str] | None = None) -> Path:
     ensure_dir(dst.parent)
     dst2 = unique_path(dst)
     shutil.move(str(src), str(dst2))
+    if logs is not None:
+        logs.append(f"{src} → {dst2}")
     return dst2
 
 def cleanup_empty_dirs(root: Path):
@@ -281,11 +289,20 @@ def build_movie_title_and_year(stem: str) -> Tuple[str, Optional[str]]:
     title = base or "Unknown Movie"
     return title, year
 
+def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
+    """
+    Extrait l'info hash (btih) depuis un lien magnet.
+    """
+    m = re.search(r"btih:([a-fA-F0-9]{40}|[a-zA-Z0-9]{32})", magnet)
+    if not m:
+        return None
+    return m.group(1).lower()
+
 # ----------------- IMPORT LOGIC -----------------
-def import_series(torrent_name: str, content_root: Path) -> Tuple[str, int]:
+def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
     """
     Déplace TOUS les fichiers vidéo de la série:
-    series\Show\Season XX\Show - SXXEYY.ext
+    r"series\Show\Season XX\Show - SXXEYY.ext"
     Retourne (show_title, nb_fichiers_deplaces)
     """
     show = guess_show_title_from_torrent(torrent_name)
@@ -314,7 +331,7 @@ def import_series(torrent_name: str, content_root: Path) -> Tuple[str, int]:
         season_counts[season] = season_counts.get(season, 0) + 1
         season_dir = PLEX_SERIES / show / f"Season {season:02d}"
         new_filename = f"{show} - S{season:02d}E{ep:02d}{f.suffix.lower()}"
-        move_file(f, season_dir / new_filename)
+        move_file(f, season_dir / new_filename, move_logs)
         moved += 1
 
     # 2) fichiers sans S/E -> on devine la saison
@@ -332,7 +349,7 @@ def import_series(torrent_name: str, content_root: Path) -> Tuple[str, int]:
     for f in unknown:
         season_dir = PLEX_SERIES / show / f"Season {guessed_season:02d}"
         new_filename = f"{show} - S{guessed_season:02d}E{ep_counter:02d}{f.suffix.lower()}"
-        move_file(f, season_dir / new_filename)
+        move_file(f, season_dir / new_filename, move_logs)
         moved += 1
         ep_counter += 1
 
@@ -342,10 +359,10 @@ def import_series(torrent_name: str, content_root: Path) -> Tuple[str, int]:
 
     return show, moved
 
-def import_movie(torrent_name: str, content_root: Path) -> Tuple[str, Path]:
+def import_movie(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
     """
     Déplace le plus gros fichier vidéo en:
-    movies\Title (Year)\Title (Year).ext
+    r"movies\Title (Year)\Title (Year).ext"
     Retourne (display_name, new_path)
     """
     files = all_video_files(content_root)
@@ -361,12 +378,62 @@ def import_movie(torrent_name: str, content_root: Path) -> Tuple[str, Path]:
 
     movie_dir = PLEX_MOVIES / display
     new_filename = f"{display}{video.suffix.lower()}"
-    new_path = move_file(video, movie_dir / new_filename)
+    new_path = move_file(video, movie_dir / new_filename, move_logs)
 
     if content_root.is_dir():
         cleanup_empty_dirs(content_root)
 
     return display, new_path
+
+class ConfirmView(discord.ui.View):
+    def __init__(self, *, timeout: float = 60):
+        super().__init__(timeout=timeout)
+        self.value: Optional[bool] = None
+
+    @discord.ui.button(label="Oui", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        self.value = True
+        self.stop()
+        await interaction.response.edit_message(content="Confirmation reçue, import en cours…", view=None)
+
+    @discord.ui.button(label="Non", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        self.value = False
+        self.stop()
+        await interaction.response.edit_message(content="Import annulé sur demande.", view=None)
+
+async def track_download_progress(interaction: discord.Interaction, info_hash: str, label: str):
+    """
+    Suit le téléchargement et met à jour un message ephemeral.
+    """
+    message = await interaction.followup.send(f"📥 Suivi de `{label}`…", ephemeral=True)
+    max_iterations = 120  # ~10 minutes avec sleep(5)
+    for _ in range(max_iterations):
+        try:
+            info = await qbit.get_torrent_by_hash(info_hash)
+        except Exception as e:
+            await message.edit(content=f"⚠️ Suivi interrompu: {e}")
+            return
+
+        if not info:
+            await message.edit(content="⚠️ Torrent introuvable pour le suivi.")
+            return
+
+        progress = int(info.get("progress", 0.0) * 100)
+        state = info.get("state", "???")
+        speed = int(info.get("dlspeed", 0))
+        eta = info.get("eta", None)
+
+        eta_str = "?" if eta is None or eta < 0 else f"{eta // 60} min"
+        content = f"📥 `{label}` — {progress}% — état: {state} — ↓ {speed // 1024} KiB/s — ETA {eta_str}"
+        await message.edit(content=content)
+
+        if progress >= 100 or state.lower().startswith("stalledup") or state.lower().startswith("upload"):
+            await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
+            return
+        await asyncio.sleep(5)
+
+    await message.edit(content="⚠️ Suivi arrêté après délai — dernier état affiché.")
 
 # ----------------- DISCORD EVENTS -----------------
 @bot.event
@@ -404,13 +471,24 @@ async def status(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
-@app_commands.describe(magnet="Lien magnet", kind="movies ou series")
-async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "movies"):
+@app_commands.describe(
+    magnet="Lien magnet",
+    kind="movies ou series",
+    track="Suivre automatiquement la progression du téléchargement",
+)
+async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "movies", track: bool = True):
     await interaction.response.defer(ephemeral=True)
     category = "movies" if kind.lower().strip() == "movies" else "series"
+    info_hash = parse_info_hash_from_magnet(magnet)
     try:
         await qbit.add_magnet(magnet, category=category)
         await interaction.followup.send(f"✅ Magnet ajouté (catégorie: {category}).", ephemeral=True)
+        if track:
+            if info_hash:
+                label = f"{category} ({info_hash[:8]})"
+                asyncio.create_task(track_download_progress(interaction, info_hash, label))
+            else:
+                await interaction.followup.send("⚠️ Suivi automatique indisponible (hash introuvable dans le magnet).", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
@@ -437,36 +515,71 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
         await interaction.followup.send("Aucun torrent terminé à importer.", ephemeral=True)
         return
 
+    planned = []
     for t in completed[:max_items]:
         torrent_name = t.get("name", "???")
         category = (t.get("category") or "").lower().strip()
-
         content_root = pick_content_path(t)
         if not content_root:
             skipped.append(f"{torrent_name} (chemin introuvable)")
-        else:
-            try:
-                is_series = (category == "series") or looks_like_series_name(torrent_name)
-                is_forced_movie = (category == "movies")
+            continue
 
-                if is_series and not is_forced_movie:
-                    show, n = import_series(torrent_name, content_root)
-                    did_series = True
-                    moved_items += 1
-                    moved_files += n
-                    if n == 1:
-                        results.append(f"📺 Série: `{torrent_name}` → 1 fichier dans `{PLEX_SERIES / show}`")
-                    else:
-                        results.append(f"📺 Série: `{torrent_name}` → **{n}** fichiers dans `{PLEX_SERIES / show}`")
-                else:
-                    display, new_path = import_movie(torrent_name, content_root)
-                    did_movies = True
-                    moved_items += 1
-                    moved_files += 1
-                    results.append(f"🎬 Film: `{torrent_name}` → `{new_path}`")
+        is_series = (category == "series") or looks_like_series_name(torrent_name)
+        is_forced_movie = (category == "movies")
+        planned.append({
+            "torrent": t,
+            "name": torrent_name,
+            "content_root": content_root,
+            "is_series": is_series and not is_forced_movie,
+        })
 
-            except Exception as e:
-                errors.append(f"{torrent_name} ({e})")
+    if not planned and not skipped:
+        await interaction.followup.send("Aucun torrent prêt à être importé.", ephemeral=True)
+        return
+
+    plan_lines = [f"- `{p['name']}` → {'série' if p['is_series'] else 'film'} (source: `{p['content_root']}`)" for p in planned[:10]]
+    if len(planned) > 10:
+        plan_lines.append(f"+ {len(planned) - 10} autres…")
+
+    confirm_embed = discord.Embed(
+        title="Confirmer l'import ?",
+        description="Le bot va déplacer et renommer les fichiers comme indiqué ci-dessous.",
+    )
+    if plan_lines:
+        confirm_embed.add_field(name="Plan", value="\n".join(plan_lines), inline=False)
+    if skipped:
+        confirm_embed.add_field(name="⚠️ Ignorés", value="\n".join(f"- {x}" for x in skipped[:10]), inline=False)
+
+    view = ConfirmView(timeout=120)
+    prompt_msg = await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
+    await view.wait()
+    await prompt_msg.edit(view=None)
+
+    if view.value is not True:
+        await interaction.followup.send("Import annulé.", ephemeral=True)
+        return
+
+    move_logs: List[str] = []
+    for p in planned:
+        torrent_name = p["name"]
+        content_root = p["content_root"]
+        try:
+            if p["is_series"]:
+                show, n = import_series(torrent_name, content_root, move_logs)
+                did_series = True
+                moved_items += 1
+                moved_files += n
+                target_path = PLEX_SERIES / show
+                results.append(f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`")
+            else:
+                display, new_path = import_movie(torrent_name, content_root, move_logs)
+                did_movies = True
+                moved_items += 1
+                moved_files += 1
+                results.append(f"🎬 Film: `{torrent_name}` → `{new_path}`")
+
+        except Exception as e:
+            errors.append(f"{torrent_name} ({e})")
 
     # Refresh Plex (si configuré)
     refresh_lines = []
@@ -492,6 +605,9 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
         embed.add_field(name="✅ Résultats", value="\n".join(results[:12]), inline=False)
         if len(results) > 12:
             embed.add_field(name="…", value=f"+ {len(results) - 12} autres", inline=False)
+
+    if 'move_logs' in locals() and move_logs:
+        embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
 
     if skipped:
         embed.add_field(name="⚠️ Ignorés", value="\n".join(f"- {x}" for x in skipped[:10]), inline=False)
