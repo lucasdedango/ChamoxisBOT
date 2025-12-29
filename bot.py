@@ -438,9 +438,11 @@ def shorten(text: str, max_len: int = 90) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
-def build_jackett_search_url(query: str, limit: int = 20) -> str:
+def build_jackett_search_url(query: str, limit: int = 20, *, indexer: str | None = None) -> str:
     q = urllib.parse.quote_plus(query)
-    base = f"{JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api"
+    idx = (indexer or "all").strip() or "all"
+    idx_path = urllib.parse.quote(idx, safe="")
+    base = f"{JACKETT_URL}/api/v2.0/indexers/{idx_path}/results/torznab/api"
     return f"{base}?apikey={JACKETT_API_KEY}&t=search&q={q}&limit={limit}"
 
 
@@ -823,13 +825,20 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     query="Texte à rechercher",
     limit="Nombre d'items à afficher (défaut 5)",
     kind="movies ou series pour choisir la catégorie qBittorrent",
+    indexer="Nom exact de l'indexer Jackett (défaut: all)",
 )
-async def jackettsearch(interaction: discord.Interaction, query: str, limit: int = 5, kind: str = "movies"):
+async def jackettsearch(
+    interaction: discord.Interaction,
+    query: str,
+    limit: int = 5,
+    kind: str = "movies",
+    indexer: str | None = None,
+):
     await interaction.response.defer(ephemeral=True)
     if not JACKETT_API_KEY:
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
-    search_url = build_jackett_search_url(query, limit=max(limit, 1))
+    search_url = build_jackett_search_url(query, limit=max(limit, 1), indexer=indexer)
     try:
         xml_text = await fetch_rss(search_url)
     except Exception as e:
@@ -850,7 +859,7 @@ async def jackettsearch(interaction: discord.Interaction, query: str, limit: int
         lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title=f"Jackett: résultats pour \"{query}\"",
+        title=f"Jackett ({indexer or 'all'}): résultats pour \"{query}\"",
         description="\n".join(lines),
     )
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
