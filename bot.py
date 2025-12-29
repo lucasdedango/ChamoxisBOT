@@ -11,7 +11,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from typing import TypedDict
 
 load_dotenv()
 
@@ -33,16 +32,20 @@ PLEX_ROOT = Path(r"D:\plexmediaserver")
 PLEX_MOVIES = PLEX_ROOT / "movies"
 PLEX_SERIES = PLEX_ROOT / "series"
 
-# Ton serveur Discord (sync instant)
-GUILD_ID = 369545955252502528
-
-YGG_RSS_URL = "https://www.yggtorrent.org/rss?action=generate&type=subcat&id=2183&passkey=DSlTTJdD6iQndGp8z4qeI4sG1LobRvKK"
-YGG_USERNAME = os.getenv("YGG_USERNAME", "")
-YGG_PASSWORD = os.getenv("YGG_PASSWORD", "")
-YGG_USER_AGENT = os.getenv(
-    "YGG_USER_AGENT",
+# Jackett (RSS)
+JACKETT_URL = os.getenv("JACKETT_URL", "http://127.0.0.1:9117").rstrip("/")
+JACKETT_API_KEY = os.getenv("JACKETT_API_KEY", "")
+JACKETT_RSS_URL = os.getenv(
+    "JACKETT_RSS_URL",
+    f"{JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api?apikey={JACKETT_API_KEY}&limit=20",
+)
+JACKETT_USER_AGENT = os.getenv(
+    "JACKETT_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
 )
+
+# Ton serveur Discord (sync instant)
+GUILD_ID = 369545955252502528
 
 # Extensions vidéo
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".ts"}
@@ -75,8 +78,6 @@ class TrackedTorrent(TypedDict):
 tracked_torrents: Dict[str, TrackedTorrent] = {}
 imported_torrents: set[str] = set()
 pending_import_prompts: set[str] = set()
-ygg_session: aiohttp.ClientSession | None = None
-ygg_logged_in: bool = False
 
 # ----------------- QBITTORRENT CLIENT -----------------
 class QbitClient:
@@ -405,73 +406,18 @@ def shorten(text: str, max_len: int = 90) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
-async def get_ygg_session() -> aiohttp.ClientSession:
-    global ygg_session, ygg_logged_in
-    if ygg_session is None or ygg_session.closed:
-        jar = aiohttp.CookieJar(unsafe=True)
-        timeout = aiohttp.ClientTimeout(total=25)
-        ygg_session = aiohttp.ClientSession(cookie_jar=jar, timeout=timeout, headers={"User-Agent": YGG_USER_AGENT})
-        ygg_logged_in = False
-    return ygg_session
-
-
-async def ygg_login() -> None:
+async def fetch_rss(url: str, *, user_agent: str = JACKETT_USER_AGENT) -> str:
     """
-    Tente une connexion YGG (nécessite YGG_USERNAME / YGG_PASSWORD).
+    Récupère un flux RSS générique (utilisé pour Jackett).
     """
-    global ygg_logged_in
-    if not (YGG_USERNAME and YGG_PASSWORD):
-        raise RuntimeError("Identifiants YGG manquants (YGG_USERNAME / YGG_PASSWORD).")
-
-    session = await get_ygg_session()
-    url = "https://www.yggtorrent.org/auth/process_login"
-    data = {"id": YGG_USERNAME, "pass": YGG_PASSWORD}
-    async with session.post(url, data=data, allow_redirects=False) as r:
-        if r.status == 200:
-            ygg_logged_in = True
-            return
-        if r.status in (301, 302, 303, 307, 308):
-            # Certains retours peuvent être des redirects après succès
-            ygg_logged_in = True
-            return
-        if r.status == 401:
-            raise RuntimeError("Login YGG refusé (401). Vérifie le pseudo/mot de passe.")
-        if r.status == 403:
-            raise RuntimeError("Login YGG refusé (403). Compte non confirmé/banni ?")
-        raise RuntimeError(f"Login YGG échoué: HTTP {r.status}")
-
-
-async def ensure_ygg_login():
-    """
-    Connecte YGG si nécessaire.
-    """
-    global ygg_logged_in
-    if ygg_logged_in:
-        return
-    await ygg_login()
-
-
-async def fetch_ygg_rss(url: str) -> str:
-    """
-    Récupère le flux RSS en se (ré)connectant si nécessaire.
-    """
-    session = await get_ygg_session()
-    await ensure_ygg_login()
-
-    async def _get() -> aiohttp.ClientResponse:
-        return await session.get(url, headers={"User-Agent": YGG_USER_AGENT})
-
-    resp = await _get()
-    if resp.status in (401, 403):
-        # Forcer une reconnexion
-        globals()["ygg_logged_in"] = False
-        await ygg_login()
-        resp = await _get()
-
-    if resp.status != 200:
-        text = await resp.text()
-        raise RuntimeError(f"HTTP {resp.status} sur le flux RSS ({text[:120]}).")
-    return await resp.text()
+    timeout = aiohttp.ClientTimeout(total=25)
+    headers = {"User-Agent": user_agent} if user_agent else {}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"HTTP {resp.status} sur le flux RSS ({text[:120]}).")
+            return await resp.text()
 
 
 async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
@@ -772,19 +718,20 @@ async def status(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 
-@bot.tree.command(name="rssfeed", description="Consulte le flux RSS et ajoute un torrent.")
+@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Jackett et ajoute un torrent.")
 @app_commands.describe(
-    url="URL du flux RSS",
+    url="URL du flux RSS Jackett (par défaut JACKETT_RSS_URL)",
     limit="Nombre d'items à afficher (défaut 5)",
     kind="movies ou series pour choisir la catégorie qBittorrent",
 )
-async def rssfeed(interaction: discord.Interaction, url: str = YGG_RSS_URL, limit: int = 5, kind: str = "movies"):
+async def rssfeed(interaction: discord.Interaction, url: str | None = None, limit: int = 5, kind: str = "movies"):
     await interaction.response.defer(ephemeral=True)
-    if not (YGG_USERNAME and YGG_PASSWORD):
-        await interaction.followup.send("❌ YGG_USERNAME / YGG_PASSWORD manquants dans l'environnement.", ephemeral=True)
+    feed_url = url or JACKETT_RSS_URL
+    if not feed_url:
+        await interaction.followup.send("❌ Aucun flux RSS Jackett configuré (renseigne JACKETT_RSS_URL).", ephemeral=True)
         return
     try:
-        xml_text = await fetch_ygg_rss(url)
+        xml_text = await fetch_rss(feed_url)
     except Exception as e:
         await interaction.followup.send(f"❌ Impossible de lire le flux RSS: {e}", ephemeral=True)
         return
@@ -803,7 +750,7 @@ async def rssfeed(interaction: discord.Interaction, url: str = YGG_RSS_URL, limi
         lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title="Flux RSS (YggTorrent)",
+        title="Flux RSS (Jackett)",
         description="\n".join(lines),
     )
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
