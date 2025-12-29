@@ -170,6 +170,37 @@ class QbitClient:
             data["category"] = category
         await self._post_text("/api/v2/torrents/add", data=data)
 
+    async def add_torrent_file(self, torrent_bytes: bytes, filename: str = "download.torrent", category: str | None = None):
+        if not self.session:
+            raise RuntimeError("QbitClient.start() n'a pas été appelé.")
+        await self.ensure_login()
+
+        async def _post_once():
+            form = aiohttp.FormData()
+            form.add_field(
+                "torrents",
+                torrent_bytes,
+                filename=filename,
+                content_type="application/x-bittorrent",
+            )
+            if category:
+                form.add_field("category", category)
+            url = f"{self.base_url}/api/v2/torrents/add"
+            async with self.session.post(url, data=form) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"HTTP {r.status} / {await r.text()}")
+
+        try:
+            await _post_once()
+        except RuntimeError as e:
+            # Tentative de relogin si le SID a expiré
+            if "HTTP 403" in str(e):
+                self.logged_in = False
+                await self.ensure_login()
+                await _post_once()
+            else:
+                raise
+
     async def get_torrent_by_hash(self, info_hash: str) -> Optional[dict]:
         items = await self._get_json("/api/v2/torrents/info", params={"hashes": info_hash})
         if not items:
@@ -624,11 +655,31 @@ class RssSelect(discord.ui.Select):
             return
         try:
             await qbit.add_magnet(url, category=self.category)
+            added_via = "URL"
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ajout qBittorrent échoué: {e}", ephemeral=True)
-            return
+            # Fallback: télécharger le .torrent et l'uploader en multipart
+            try:
+                timeout = aiohttp.ClientTimeout(total=25)
+                headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            text = await resp.text()
+                            raise RuntimeError(f"HTTP {resp.status} lors du téléchargement du .torrent ({text[:120]})")
+                        torrent_bytes = await resp.read()
+                await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=self.category)
+                added_via = "upload .torrent"
+            except Exception as e2:
+                await interaction.response.send_message(
+                    f"❌ Ajout qBittorrent échoué via URL ({e}) et via upload ({e2}).",
+                    ephemeral=True,
+                )
+                return
 
-        await interaction.response.send_message(f"✅ Ajouté: `{item.get('title', '???')}` (catégorie: {self.category})", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Ajouté: `{item.get('title', '???')}` (catégorie: {self.category}, méthode: {added_via})",
+            ephemeral=True,
+        )
 
         # Tentative de retrouver le hash pour le suivi
         try:
