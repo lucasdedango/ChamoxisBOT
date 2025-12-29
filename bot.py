@@ -700,6 +700,91 @@ class RssView(discord.ui.View):
             self.add_item(RssSelect(items, category))
 
 
+async def list_jackett_indexers() -> List[str]:
+    """
+    Récupère la liste des indexers Jackett actifs.
+    """
+    if not JACKETT_API_KEY:
+        return []
+    url = f"{JACKETT_URL}/api/v2.0/indexers?apikey={JACKETT_API_KEY}"
+    timeout = aiohttp.ClientTimeout(total=15)
+    headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"HTTP {resp.status} sur Jackett /indexers ({text[:120]})")
+            data = await resp.json()
+    names: List[str] = []
+    for entry in data:
+        name = entry.get("name") or entry.get("id") or ""
+        if name:
+            names.append(str(name))
+    return names
+
+
+async def send_jackett_results(interaction: discord.Interaction, query: str, limit: int, kind: str, indexer: str | None):
+    search_url = build_jackett_search_url(query, limit=max(limit, 1), indexer=indexer)
+    try:
+        xml_text = await fetch_rss(search_url)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible d'interroger Jackett: {e}", ephemeral=True)
+        return
+
+    try:
+        items = parse_rss_feed(xml_text, limit=limit)
+    except ET.ParseError as e:
+        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
+        return
+    if not items:
+        await interaction.followup.send("Aucun résultat pour cette recherche.", ephemeral=True)
+        return
+
+    lines = []
+    for idx, item in enumerate(items, start=1):
+        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
+
+    embed = discord.Embed(
+        title=f"Jackett ({indexer or 'all'}): résultats pour \"{query}\"",
+        description="\n".join(lines),
+    )
+    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
+
+    category = "movies" if kind.lower().strip() == "movies" else "series"
+    view = RssView(items, category)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class JackettIndexerSelect(discord.ui.Select):
+    def __init__(self, indexers: List[str], query: str, limit: int, kind: str, parent_view: "JackettIndexerView"):
+        options = []
+        for name in indexers[:25]:  # Discord Select max 25 options
+            options.append(discord.SelectOption(label=shorten(name, 90), value=name))
+        super().__init__(placeholder="Choisis un indexer Jackett", options=options, min_values=1, max_values=1)
+        self.query = query
+        self.limit = limit
+        self.kind = kind
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        chosen = self.values[0]
+        await interaction.response.defer(ephemeral=True)
+        await send_jackett_results(interaction, self.query, self.limit, self.kind, chosen)
+        if self.parent_view.message:
+            try:
+                await self.parent_view.message.edit(content=f"Indexer sélectionné: `{chosen}`", view=None)
+            except Exception:
+                pass
+
+
+class JackettIndexerView(discord.ui.View):
+    def __init__(self, indexers: List[str], query: str, limit: int, kind: str, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.message: discord.Message | None = None
+        if indexers:
+            self.add_item(JackettIndexerSelect(indexers, query, limit, kind, self))
+
+
 async def track_download_progress(interaction: discord.Interaction, info_hash: str, label: str):
     """
     Suit le téléchargement et met à jour un message ephemeral.
@@ -838,35 +923,30 @@ async def jackettsearch(
     if not JACKETT_API_KEY:
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
-    search_url = build_jackett_search_url(query, limit=max(limit, 1), indexer=indexer)
+    # Si l'indexer est donné, on exécute directement la recherche
+    if indexer:
+        await send_jackett_results(interaction, query, limit, kind, indexer)
+        return
+
+    # Sinon on propose un sélecteur d'indexers disponibles
     try:
-        xml_text = await fetch_rss(search_url)
+        indexers = await list_jackett_indexers()
     except Exception as e:
-        await interaction.followup.send(f"❌ Impossible d'interroger Jackett: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Impossible de récupérer les indexers Jackett: {e}", ephemeral=True)
         return
 
-    try:
-        items = parse_rss_feed(xml_text, limit=limit)
-    except ET.ParseError as e:
-        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
-        return
-    if not items:
-        await interaction.followup.send("Aucun résultat pour cette recherche.", ephemeral=True)
+    if not indexers:
+        # Fallback sur all si aucun indexer n'est récupéré
+        await send_jackett_results(interaction, query, limit, kind, None)
         return
 
-    lines = []
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
-
-    embed = discord.Embed(
-        title=f"Jackett ({indexer or 'all'}): résultats pour \"{query}\"",
-        description="\n".join(lines),
+    view = JackettIndexerView(indexers, query, limit, kind)
+    msg = await interaction.followup.send(
+        content="Choisis un indexer Jackett pour lancer la recherche :",
+        view=view,
+        ephemeral=True,
     )
-    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
-
-    category = "movies" if kind.lower().strip() == "movies" else "series"
-    view = RssView(items, category)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    view.message = msg
 
 
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
