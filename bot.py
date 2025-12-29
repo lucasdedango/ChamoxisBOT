@@ -3,13 +3,14 @@ import re
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, TypedDict
 
 import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+from typing import TypedDict
 
 load_dotenv()
 
@@ -55,6 +56,16 @@ JUNK_TOKENS = {
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+class TrackedTorrent(TypedDict):
+    user_id: int
+    user_label: str
+
+
+tracked_torrents: Dict[str, TrackedTorrent] = {}
+imported_torrents: set[str] = set()
+pending_import_prompts: set[str] = set()
 
 # ----------------- QBITTORRENT CLIENT -----------------
 class QbitClient:
@@ -298,6 +309,52 @@ def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
         return None
     return m.group(1).lower()
 
+
+def remember_tracked_torrent(info_hash: str, user: discord.abc.User):
+    """
+    Enregistre un torrent comme suivi pour un utilisateur précis.
+    """
+    tracked_torrents[info_hash] = {
+        "user_id": user.id,
+        "user_label": user.display_name or user.name,
+    }
+
+
+def check_user_ownership(info_hash: str, user_id: int) -> Tuple[bool, str]:
+    if info_hash in imported_torrents:
+        return False, "déjà importé"
+    tracked = tracked_torrents.get(info_hash)
+    if not tracked:
+        return False, "non suivi (/cleartorrents ou historique)"
+    if tracked["user_id"] != user_id:
+        return False, f"réservé à {tracked['user_label']}"
+    return True, ""
+
+
+def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
+    """
+    Retourne (message, did_series, did_movies, moved_files, info_hash)
+    """
+    torrent_name = torrent.get("name", "???")
+    category = (torrent.get("category") or "").lower().strip()
+    content_root = pick_content_path(torrent)
+    if not content_root:
+        raise RuntimeError("chemin introuvable")
+
+    info_hash = torrent.get("hash", "")
+    is_series = (category == "series") or looks_like_series_name(torrent_name)
+    is_forced_movie = (category == "movies")
+
+    if is_series and not is_forced_movie:
+        show, n = import_series(torrent_name, content_root, move_logs)
+        target_path = PLEX_SERIES / show
+        msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
+        return msg, True, False, n, info_hash
+
+    display, new_path = import_movie(torrent_name, content_root, move_logs)
+    msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
+    return msg, False, True, 1, info_hash
+
 # ----------------- IMPORT LOGIC -----------------
 def import_series(torrent_name: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
     r"""
@@ -402,6 +459,40 @@ class ConfirmView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(content="Import annulé sur demande.", view=None)
 
+
+class AutoImportView(discord.ui.View):
+    def __init__(self, info_hash: str, user_id: int, label: str, *, timeout: float = 90):
+        super().__init__(timeout=timeout)
+        self.info_hash = info_hash
+        self.user_id = user_id
+        self.label = label
+
+    def _cleanup(self):
+        pending_import_prompts.discard(self.info_hash)
+
+    async def on_timeout(self) -> None:  # type: ignore[override]
+        self._cleanup()
+        return await super().on_timeout()
+
+    @discord.ui.button(label="Importer maintenant", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Seul l'utilisateur qui a ajouté ce torrent peut l'importer.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await handle_auto_import(interaction, self.info_hash, self.label)
+        self._cleanup()
+        self.stop()
+
+    @discord.ui.button(label="Plus tard", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        if interaction.response.is_done():
+            return
+        await interaction.response.edit_message(content=f"Import différé pour `{self.label}`.", view=None)
+        self._cleanup()
+        self.stop()
+
+
 async def track_download_progress(interaction: discord.Interaction, info_hash: str, label: str):
     """
     Suit le téléchargement et met à jour un message ephemeral.
@@ -430,6 +521,15 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
 
         if progress >= 100 or state.lower().startswith("stalledup") or state.lower().startswith("upload"):
             await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
+            if info_hash in pending_import_prompts:
+                return
+            pending_import_prompts.add(info_hash)
+            view = AutoImportView(info_hash, interaction.user.id, label)
+            await interaction.followup.send(
+                f"📦 Télécharger terminé pour `{label}`. Importer maintenant ?",
+                view=view,
+                ephemeral=True,
+            )
             return
         await asyncio.sleep(5)
 
@@ -482,7 +582,12 @@ async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "
     info_hash = parse_info_hash_from_magnet(magnet)
     try:
         await qbit.add_magnet(magnet, category=category)
-        await interaction.followup.send(f"✅ Magnet ajouté (catégorie: {category}).", ephemeral=True)
+        if info_hash:
+            remember_tracked_torrent(info_hash, interaction.user)
+            tracked_msg = f" (suivi pour {interaction.user.display_name or interaction.user.name})"
+        else:
+            tracked_msg = " (hash non détecté : suivi limité)"
+        await interaction.followup.send(f"✅ Magnet ajouté (catégorie: {category}){tracked_msg}.", ephemeral=True)
         if track:
             if info_hash:
                 label = f"{category} ({info_hash[:8]})"
@@ -491,6 +596,69 @@ async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "
                 await interaction.followup.send("⚠️ Suivi automatique indisponible (hash introuvable dans le magnet).", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
+
+
+@bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
+async def cleartorrents(interaction: discord.Interaction):
+    tracked_torrents.clear()
+    imported_torrents.clear()
+    pending_import_prompts.clear()
+    await interaction.response.send_message("🧹 Liste des torrents suivis réinitialisée. Les imports futurs concerneront uniquement les nouveaux torrents ajoutés.", ephemeral=True)
+
+
+async def handle_auto_import(interaction: discord.Interaction, info_hash: str, label: str):
+    try:
+        torrent = await qbit.get_torrent_by_hash(info_hash)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible de récupérer le torrent `{label}` : {e}", ephemeral=True)
+        return
+
+    if not torrent:
+        await interaction.followup.send(f"❌ Torrent `{label}` introuvable dans qBittorrent.", ephemeral=True)
+        return
+
+    ok, reason = check_user_ownership(info_hash, interaction.user.id)
+    if not ok:
+        await interaction.followup.send(f"❌ Import refusé pour `{label}` : {reason}.", ephemeral=True)
+        return
+
+    progress = float(torrent.get("progress", 0.0))
+    if progress < 1.0:
+        await interaction.followup.send(f"⏳ `{label}` n'est pas encore terminé ({int(progress * 100)}%).", ephemeral=True)
+        return
+
+    move_logs: List[str] = []
+    try:
+        msg, did_series, did_movies, moved_files, _ = import_torrent_entry(torrent, move_logs)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
+        return
+
+    imported_torrents.add(info_hash)
+
+    refresh_lines = []
+    if did_movies and PLEX_MOVIES_SECTION_ID:
+        ok_refresh, msg_refresh = await plex_refresh(PLEX_MOVIES_SECTION_ID)
+        refresh_lines.append(f"🎬 Movies refresh: {'OK' if ok_refresh else 'KO'} ({msg_refresh})")
+    if did_series and PLEX_SERIES_SECTION_ID:
+        ok_refresh, msg_refresh = await plex_refresh(PLEX_SERIES_SECTION_ID)
+        refresh_lines.append(f"📺 Series refresh: {'OK' if ok_refresh else 'KO'} ({msg_refresh})")
+    if not refresh_lines and (PLEX_URL and PLEX_TOKEN):
+        refresh_lines.append("ℹ️ Plex configuré mais section id manquant.")
+    if not (PLEX_URL and PLEX_TOKEN):
+        refresh_lines.append("ℹ️ Plex refresh non configuré (scan auto Plex devrait suffire).")
+
+    embed = discord.Embed(
+        title=f"📦 Import terminé pour `{label}`",
+        description=msg,
+    )
+    embed.add_field(name="Fichiers déplacés", value=str(moved_files), inline=True)
+    if move_logs:
+        embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
+    if refresh_lines:
+        embed.add_field(name="🔄 Plex", value="\n".join(refresh_lines), inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="import", description="Smart import Plex: trie série/film + renomme + refresh.")
 @app_commands.describe(max_items="Nombre max de torrents à importer (défaut 5)")
@@ -516,22 +684,37 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
         return
 
     planned = []
-    for t in completed[:max_items]:
-        torrent_name = t.get("name", "???")
+    skipped_full = []
+    for t in completed:
+        info_hash = t.get("hash", "")
+        ok, reason = check_user_ownership(info_hash, interaction.user.id)
+        if not ok:
+            skipped_full.append(f"{t.get('name', '???')} ({reason})")
+            continue
+
+        if info_hash in imported_torrents:
+            skipped_full.append(f"{t.get('name', '???')} (déjà importé)")
+            continue
+
         category = (t.get("category") or "").lower().strip()
         content_root = pick_content_path(t)
         if not content_root:
-            skipped.append(f"{torrent_name} (chemin introuvable)")
+            skipped_full.append(f"{t.get('name', '???')} (chemin introuvable)")
             continue
 
-        is_series = (category == "series") or looks_like_series_name(torrent_name)
+        is_series = (category == "series") or looks_like_series_name(t.get("name", "???"))
         is_forced_movie = (category == "movies")
         planned.append({
             "torrent": t,
-            "name": torrent_name,
+            "name": t.get("name", "???"),
             "content_root": content_root,
             "is_series": is_series and not is_forced_movie,
         })
+
+        if len(planned) >= max_items:
+            break
+
+    skipped = skipped_full
 
     if not planned and not skipped:
         await interaction.followup.send("Aucun torrent prêt à être importé.", ephemeral=True)
@@ -561,25 +744,18 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
 
     move_logs: List[str] = []
     for p in planned:
-        torrent_name = p["name"]
-        content_root = p["content_root"]
+        torrent = p["torrent"]
+        info_hash = torrent.get("hash", "")
         try:
-            if p["is_series"]:
-                show, n = import_series(torrent_name, content_root, move_logs)
-                did_series = True
-                moved_items += 1
-                moved_files += n
-                target_path = PLEX_SERIES / show
-                results.append(f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`")
-            else:
-                display, new_path = import_movie(torrent_name, content_root, move_logs)
-                did_movies = True
-                moved_items += 1
-                moved_files += 1
-                results.append(f"🎬 Film: `{torrent_name}` → `{new_path}`")
-
+            msg, ds, dm, moved, _ = import_torrent_entry(torrent, move_logs)
+            did_series = did_series or ds
+            did_movies = did_movies or dm
+            moved_items += 1
+            moved_files += moved
+            imported_torrents.add(info_hash)
+            results.append(msg)
         except Exception as e:
-            errors.append(f"{torrent_name} ({e})")
+            errors.append(f"{p['name']} ({e})")
 
     # Refresh Plex (si configuré)
     refresh_lines = []
@@ -596,9 +772,10 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
             refresh_lines.append("ℹ️ Plex refresh non configuré (scan auto Plex devrait suffire).")
 
     # Embed stylé
+    total_candidates = len(planned) + len(skipped)
     embed = discord.Embed(
         title="📦 Smart Import Plex",
-        description=f"Torrents traités: **{min(max_items, len(completed))}** | Importés: **{moved_items}** | Fichiers déplacés: **{moved_files}**",
+        description=f"Torrents considérés: **{total_candidates}** | Importés: **{moved_items}** | Fichiers déplacés: **{moved_files}**",
     )
 
     if results:
