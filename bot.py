@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, TypedDict
 import xml.etree.ElementTree as ET
+import urllib.parse
 
 import aiohttp
 import discord
@@ -406,6 +407,12 @@ def shorten(text: str, max_len: int = 90) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
+def build_jackett_search_url(query: str, limit: int = 20) -> str:
+    q = urllib.parse.quote_plus(query)
+    base = f"{JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api"
+    return f"{base}?apikey={JACKETT_API_KEY}&t=search&q={q}&limit={limit}"
+
+
 async def fetch_rss(url: str, *, user_agent: str = JACKETT_USER_AGENT) -> str:
     """
     Récupère un flux RSS générique (utilisé pour Jackett).
@@ -751,6 +758,48 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
 
     embed = discord.Embed(
         title="Flux RSS (Jackett)",
+        description="\n".join(lines),
+    )
+    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
+
+    category = "movies" if kind.lower().strip() == "movies" else "series"
+    view = RssView(items, category)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+@bot.tree.command(name="jackettsearch", description="Recherche via Jackett et ajoute un torrent.")
+@app_commands.describe(
+    query="Texte à rechercher",
+    limit="Nombre d'items à afficher (défaut 5)",
+    kind="movies ou series pour choisir la catégorie qBittorrent",
+)
+async def jackettsearch(interaction: discord.Interaction, query: str, limit: int = 5, kind: str = "movies"):
+    await interaction.response.defer(ephemeral=True)
+    if not JACKETT_API_KEY:
+        await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
+        return
+    search_url = build_jackett_search_url(query, limit=max(limit, 1))
+    try:
+        xml_text = await fetch_rss(search_url)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible d'interroger Jackett: {e}", ephemeral=True)
+        return
+
+    try:
+        items = parse_rss_feed(xml_text, limit=limit)
+    except ET.ParseError as e:
+        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
+        return
+    if not items:
+        await interaction.followup.send("Aucun résultat pour cette recherche.", ephemeral=True)
+        return
+
+    lines = []
+    for idx, item in enumerate(items, start=1):
+        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
+
+    embed = discord.Embed(
+        title=f"Jackett: résultats pour \"{query}\"",
         description="\n".join(lines),
     )
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
