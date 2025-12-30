@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import shutil
+import base64
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, TypedDict
 import xml.etree.ElementTree as ET
@@ -44,6 +45,10 @@ JACKETT_USER_AGENT = os.getenv(
     "JACKETT_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
 )
+JACKETT_USER = os.getenv("JACKETT_USER", "")
+JACKETT_PASSWORD = os.getenv("JACKETT_PASSWORD", "")
+JACKETT_COOKIE_NAME = os.getenv("JACKETT_COOKIE_NAME", "")
+JACKETT_COOKIE_VALUE = os.getenv("JACKETT_COOKIE_VALUE", "")
 
 # Ton serveur Discord (sync instant)
 GUILD_ID = 369545955252502528
@@ -446,18 +451,65 @@ def build_jackett_search_url(query: str, limit: int = 20, *, indexer: str | None
     return f"{base}?apikey={JACKETT_API_KEY}&t=search&q={q}&limit={limit}"
 
 
+def _jackett_auth_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if JACKETT_USER and JACKETT_PASSWORD:
+        token = base64.b64encode(f"{JACKETT_USER}:{JACKETT_PASSWORD}".encode()).decode()
+        headers["Authorization"] = f"Basic {token}"
+    if JACKETT_USER_AGENT:
+        headers["User-Agent"] = JACKETT_USER_AGENT
+    return headers
+
+
+async def jackett_request(url: str, *, expect_json: bool = False) -> str | list | dict:
+    """
+    Fait une requête GET Jackett, tente d'abord sans auth, puis avec Basic Auth / cookie si configuré,
+    et gère explicitement les 302/401/403.
+    """
+    timeout = aiohttp.ClientTimeout(total=25)
+    base_headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+
+    async def _attempt(use_auth: bool):
+        headers = dict(base_headers)
+        jar = aiohttp.CookieJar(unsafe=True)
+        if use_auth:
+            headers.update(_jackett_auth_headers())
+            if JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE:
+                jar.update_cookies({JACKETT_COOKIE_NAME: JACKETT_COOKIE_VALUE})
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers, cookie_jar=jar) as session:
+            async with session.get(url, allow_redirects=False) as resp:
+                if resp.status == 200:
+                    return await (resp.json() if expect_json else resp.text())
+                # Redirections ou refus : on laisse une seconde chance si pas encore en auth
+                if resp.status in (301, 302, 303, 307, 308) and not use_auth:
+                    return None
+                if resp.status in (401, 403) and not use_auth:
+                    return None
+                text = await resp.text()
+                loc = resp.headers.get("Location", "")
+                extra = f" (redir {loc[:80]})" if loc else ""
+                raise RuntimeError(f"HTTP {resp.status}{extra} / {text[:120]}")
+
+    # Premier essai sans auth explicite
+    result = await _attempt(False)
+    if result is not None:
+        return result
+
+    # Second essai avec Basic Auth / cookie si dispo
+    if not (JACKETT_USER or (JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE)):
+        raise RuntimeError("Accès Jackett refusé (auth requise ?)")
+    result = await _attempt(True)
+    if result is not None:
+        return result
+    raise RuntimeError("Accès Jackett refusé malgré authentification.")
+
+
 async def fetch_rss(url: str, *, user_agent: str = JACKETT_USER_AGENT) -> str:
     """
     Récupère un flux RSS générique (utilisé pour Jackett).
     """
-    timeout = aiohttp.ClientTimeout(total=25)
-    headers = {"User-Agent": user_agent} if user_agent else {}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"HTTP {resp.status} sur le flux RSS ({text[:120]}).")
-            return await resp.text()
+    # user_agent param conservé pour compat mais on passe par jackett_request pour gérer l'auth/cookies.
+    return str(await jackett_request(url, expect_json=False))
 
 
 async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
@@ -707,14 +759,7 @@ async def list_jackett_indexers() -> List[str]:
     if not JACKETT_API_KEY:
         return []
     url = f"{JACKETT_URL}/api/v2.0/indexers?apikey={JACKETT_API_KEY}"
-    timeout = aiohttp.ClientTimeout(total=15)
-    headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"HTTP {resp.status} sur Jackett /indexers ({text[:120]})")
-            data = await resp.json()
+    data = await jackett_request(url, expect_json=True)
     names: List[str] = []
     for entry in data:
         name = entry.get("name") or entry.get("id") or ""
