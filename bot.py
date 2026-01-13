@@ -52,6 +52,7 @@ JACKETT_COOKIE_NAME = os.getenv("JACKETT_COOKIE_NAME", "")
 JACKETT_COOKIE_VALUE = os.getenv("JACKETT_COOKIE_VALUE", "")
 JACKETT_INDEXER = "ygege"
 JACKETT_COOLDOWN_SECONDS = 30
+JACKETT_FORCE_UPLOAD = os.getenv("JACKETT_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
 
 LOG_FILE = os.getenv("BOT_LOG_FILE", "bot.log")
 logging.basicConfig(
@@ -526,6 +527,49 @@ async def fetch_rss(url: str, *, user_agent: str = JACKETT_USER_AGENT) -> str:
     return str(await jackett_request(url, expect_json=False))
 
 
+async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> bytes:
+    """
+    Télécharge un .torrent depuis Jackett en gérant auth/cookie + cooldown/retry.
+    """
+    timeout = aiohttp.ClientTimeout(total=30)
+    base_headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+
+    async def _attempt(use_auth: bool) -> tuple[int, bytes | None, str]:
+        headers = dict(base_headers)
+        jar = aiohttp.CookieJar(unsafe=True)
+        if use_auth:
+            headers.update(_jackett_auth_headers())
+            if JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE:
+                jar.update_cookies({JACKETT_COOKIE_NAME: JACKETT_COOKIE_VALUE})
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers, cookie_jar=jar) as session:
+            async with session.get(url, allow_redirects=False) as resp:
+                status = resp.status
+                if status == 200:
+                    return status, await resp.read(), ""
+                text = await resp.text()
+                loc = resp.headers.get("Location", "")
+                extra = f" (redir {loc[:80]})" if loc else ""
+                return status, None, f"{text[:120]}{extra}"
+
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        logger.info("Jackett torrent download attempt %s/%s (auth=none): %s", attempt, max_attempts, url)
+        status, payload, detail = await _attempt(False)
+        if payload is not None:
+            return payload
+        if status in (301, 302, 303, 307, 308, 401, 403, 429, 503):
+            if JACKETT_USER or (JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE):
+                logger.info("Jackett torrent download retry (auth=basic/cookie): %s", url)
+                status, payload, detail = await _attempt(True)
+                if payload is not None:
+                    return payload
+        if attempt < max_attempts:
+            logger.warning("Jackett torrent download failed (HTTP %s). Waiting %ss before retry.", status, JACKETT_COOLDOWN_SECONDS)
+            await asyncio.sleep(JACKETT_COOLDOWN_SECONDS)
+        last_error = f"HTTP {status} ({detail})"
+    raise RuntimeError(f"Téléchargement .torrent échoué: {last_error}")
+
+
 async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
     """
     Retourne (message, did_series, did_movies, moved_files, info_hash)
@@ -721,28 +765,25 @@ class RssSelect(discord.ui.Select):
         if not url:
             await interaction.response.send_message("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
             return
-        try:
-            await qbit.add_magnet(url, category=self.category)
-            added_via = "URL"
-        except Exception as e:
-            # Fallback: télécharger le .torrent et l'uploader en multipart
+        added_via = "URL"
+        if not JACKETT_FORCE_UPLOAD:
             try:
-                logger.info("URL add failed (%s). Waiting %ss before fallback download.", e, JACKETT_COOLDOWN_SECONDS)
-                await asyncio.sleep(JACKETT_COOLDOWN_SECONDS)
-                timeout = aiohttp.ClientTimeout(total=25)
-                headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
-                async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-                    async with session.get(url) as resp:
-                        if resp.status != 200:
-                            text = await resp.text()
-                            raise RuntimeError(f"HTTP {resp.status} lors du téléchargement du .torrent ({text[:120]})")
-                        torrent_bytes = await resp.read()
-                await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=self.category)
+                await qbit.add_magnet(url, category=self.category)
+                added_via = "URL"
+            except Exception as e:
+                logger.info("URL add failed (%s). Falling back to .torrent upload.", e)
                 added_via = "upload .torrent"
+        else:
+            added_via = "upload .torrent"
+
+        if added_via == "upload .torrent":
+            try:
+                torrent_bytes = await download_torrent_with_retry(url)
+                await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=self.category)
             except Exception as e2:
-                logger.error("qBittorrent add failed via URL (%s) and upload (%s).", e, e2)
+                logger.error("qBittorrent add failed via upload (%s).", e2)
                 await interaction.response.send_message(
-                    f"❌ Ajout qBittorrent échoué via URL ({e}) et via upload ({e2}).",
+                    f"❌ Ajout qBittorrent échoué via upload ({e2}).",
                     ephemeral=True,
                 )
                 return
