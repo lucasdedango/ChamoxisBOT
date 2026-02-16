@@ -55,12 +55,19 @@ JACKETT_COOLDOWN_SECONDS = 30
 JACKETT_FORCE_UPLOAD = os.getenv("JACKETT_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
 
 LOG_FILE = os.getenv("BOT_LOG_FILE", "bot.log")
+LOG_LEVEL = os.getenv("BOT_LOG_LEVEL", "INFO").upper()
+resolved_log_level = getattr(logging, LOG_LEVEL, logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=resolved_log_level,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8")],
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+    force=True,
 )
 logger = logging.getLogger("chamoxisbot")
+logger.info("Logger initialized (level=%s, file=%s)", LOG_LEVEL, LOG_FILE)
 
 # Ton serveur Discord (sync instant)
 GUILD_ID = 369545955252502528
@@ -112,11 +119,13 @@ class QbitClient:
             jar = aiohttp.CookieJar(unsafe=True)
             timeout = aiohttp.ClientTimeout(total=30)
             self.session = aiohttp.ClientSession(cookie_jar=jar, timeout=timeout)
+        logger.info("QbitClient session started for %s", self.base_url)
         self.logged_in = False
 
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
+            logger.info("QbitClient session closed")
 
     async def login(self):
         if not self.session:
@@ -128,6 +137,7 @@ class QbitClient:
             if r.status != 200 or text.strip() != "Ok.":
                 raise RuntimeError(f"Login qBittorrent échoué: HTTP {r.status} / {text}")
         self.logged_in = True
+        logger.info("qBittorrent login successful")
 
     async def ensure_login(self):
         if not self.logged_in:
@@ -139,6 +149,7 @@ class QbitClient:
         await self.ensure_login()
 
         url = f"{self.base_url}{path}"
+        logger.debug("qBittorrent GET %s params=%s", path, params)
         async with self.session.get(url, params=params) as r:
             if r.status == 403:
                 self.logged_in = False
@@ -157,6 +168,7 @@ class QbitClient:
         await self.ensure_login()
 
         url = f"{self.base_url}{path}"
+        logger.debug("qBittorrent POST %s data_keys=%s", path, list(data.keys()))
         async with self.session.post(url, data=data) as r:
             if r.status == 403:
                 self.logged_in = False
@@ -185,6 +197,7 @@ class QbitClient:
         data = {"urls": magnet}
         if category:
             data["category"] = category
+        logger.info("qBittorrent add URL (category=%s)", category or "-")
         await self._post_text("/api/v2/torrents/add", data=data)
 
     async def add_torrent_file(self, torrent_bytes: bytes, filename: str = "download.torrent", category: str | None = None):
@@ -203,6 +216,7 @@ class QbitClient:
             if category:
                 form.add_field("category", category)
             url = f"{self.base_url}/api/v2/torrents/add"
+            logger.info("qBittorrent upload torrent file (%s bytes, category=%s)", len(torrent_bytes), category or "-")
             async with self.session.post(url, data=form) as r:
                 if r.status != 200:
                     raise RuntimeError(f"HTTP {r.status} / {await r.text()}")
@@ -583,6 +597,15 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str
     info_hash = torrent.get("hash", "")
     is_series = (category == "series") or looks_like_series_name(torrent_name)
     is_forced_movie = (category == "movies")
+    logger.info(
+        "Import entry: name=%s hash=%s category=%s is_series=%s forced_movie=%s source=%s",
+        torrent_name,
+        info_hash,
+        category or "-",
+        is_series,
+        is_forced_movie,
+        content_root,
+    )
 
     if is_series and not is_forced_movie:
         show, n = await import_series(torrent_name, info_hash, content_root, move_logs)
@@ -605,6 +628,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
+    logger.info("Import series started: torrent=%s hash=%s files=%s source=%s", torrent_name, info_hash, len(files), content_root)
 
     known: List[Tuple[int, int, Path]] = []
     unknown: List[Path] = []
@@ -622,6 +646,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     target_root = PLEX_SERIES / show
     ensure_dir(target_root)
     await qbit.set_location(info_hash, target_root)
+    logger.info("Series target location set via qBittorrent: %s", target_root)
 
     moved = 0
     season_counts: Dict[int, int] = {}
@@ -663,6 +688,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
         if move_logs is not None:
             move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
 
+    logger.info("Import series completed: show=%s moved=%s", show, moved)
     return show, moved
 
 async def import_movie(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
@@ -674,6 +700,7 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
+    logger.info("Import movie started: torrent=%s hash=%s files=%s source=%s", torrent_name, info_hash, len(files), content_root)
 
     video = pick_biggest_video(files)
     if not video:
@@ -685,6 +712,7 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     movie_dir = PLEX_MOVIES / display
     ensure_dir(movie_dir)
     await qbit.set_location(info_hash, movie_dir)
+    logger.info("Movie target location set via qBittorrent: %s", movie_dir)
 
     new_filename = f"{display}{video.suffix.lower()}"
     rel_old = video.relative_to(content_root) if content_root.is_dir() else Path(video.name)
@@ -695,6 +723,7 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     if move_logs is not None:
         move_logs.append(f"{movie_dir / rel_old} → {new_path}")
 
+    logger.info("Import movie completed: display=%s path=%s", display, new_path)
     return display, new_path
 
 class ConfirmView(discord.ui.View):
@@ -759,6 +788,7 @@ class RssSelect(discord.ui.Select):
         self.category = category
 
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        logger.info("RSS selection callback by %s (%s)", interaction.user, interaction.user.id)
         idx = int(self.values[0])
         item = self.items[idx]
         url = item.get("enclosure") or item.get("link")
@@ -849,11 +879,13 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
     Suit le téléchargement et met à jour un message ephemeral.
     """
     message = await interaction.followup.send(f"📥 Suivi de `{label}`…", ephemeral=True)
+    logger.info("Tracking download started: hash=%s label=%s user=%s", info_hash, label, interaction.user.id)
     max_iterations = 120  # ~10 minutes avec sleep(5)
     for _ in range(max_iterations):
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception as e:
+            logger.exception("Tracking download failed for hash=%s", info_hash)
             await message.edit(content=f"⚠️ Suivi interrompu: {e}")
             return
 
@@ -893,15 +925,39 @@ async def setup_hook():
     guild = discord.Object(id=GUILD_ID)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
-    print(f"✅ Synced {len(synced)} command(s) to guild {GUILD_ID}: {[c.name for c in synced]}")
+    logger.info("Synced %s command(s) to guild %s: %s", len(synced), GUILD_ID, [c.name for c in synced])
 
 @bot.event
 async def on_ready():
-    print(f"Connecté en tant que {bot.user}")
+    logger.info("Connecté en tant que %s", bot.user)
+
+
+@bot.event
+async def on_error(event: str, *args, **kwargs):
+    logger.exception("Unhandled Discord event error on %s", event)
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    logger.exception(
+        "App command error: command=%s user=%s(%s) guild=%s",
+        getattr(getattr(interaction, "command", None), "qualified_name", "unknown"),
+        getattr(interaction.user, "name", "unknown"),
+        getattr(interaction.user, "id", "unknown"),
+        getattr(getattr(interaction, "guild", None), "id", "DM"),
+    )
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ Erreur de commande: {error}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"❌ Erreur de commande: {error}", ephemeral=True)
+    except Exception:
+        logger.exception("Failed to send app command error message to Discord")
 
 # ----------------- COMMANDS -----------------
 @bot.tree.command(name="status", description="Liste les derniers torrents qBittorrent.")
 async def status(interaction: discord.Interaction):
+    logger.info("/status called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
     try:
         items = await qbit.list_torrents(limit=10)
@@ -919,6 +975,7 @@ async def status(interaction: discord.Interaction):
 
         await interaction.followup.send("**Derniers torrents :**\n" + "\n".join(lines), ephemeral=True)
     except Exception as e:
+        logger.exception("/status failed")
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 
@@ -929,6 +986,7 @@ async def status(interaction: discord.Interaction):
     kind="movies ou series pour choisir la catégorie qBittorrent",
 )
 async def rssfeed(interaction: discord.Interaction, url: str | None = None, limit: int = 5, kind: str = "movies"):
+    logger.info("/rssfeed called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
     feed_url = url or JACKETT_RSS_URL
     if not feed_url:
@@ -978,6 +1036,7 @@ async def jackettsearch(
     limit: int = 5,
     kind: str = "movies",
 ):
+    logger.info("/jackettsearch called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
     if not JACKETT_API_KEY:
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
@@ -993,6 +1052,7 @@ async def jackettsearch(
     track="Suivre automatiquement la progression du téléchargement",
 )
 async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "movies", track: bool = True):
+    logger.info("/addmagnet called by %s (%s), kind=%s, track=%s", interaction.user, interaction.user.id, kind, track)
     await interaction.response.defer(ephemeral=True)
     category = "movies" if kind.lower().strip() == "movies" else "series"
     info_hash = parse_info_hash_from_magnet(magnet)
@@ -1011,11 +1071,13 @@ async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "
             else:
                 await interaction.followup.send("⚠️ Suivi automatique indisponible (hash introuvable dans le magnet).", ephemeral=True)
     except Exception as e:
+        logger.exception("/addmagnet failed")
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 
 @bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
 async def cleartorrents(interaction: discord.Interaction):
+    logger.info("/cleartorrents called by %s (%s)", interaction.user, interaction.user.id)
     tracked_torrents.clear()
     imported_torrents.clear()
     pending_import_prompts.clear()
@@ -1023,9 +1085,11 @@ async def cleartorrents(interaction: discord.Interaction):
 
 
 async def handle_auto_import(interaction: discord.Interaction, info_hash: str, label: str):
+    logger.info("Auto-import requested for hash=%s label=%s by %s", info_hash, label, interaction.user.id)
     try:
         torrent = await qbit.get_torrent_by_hash(info_hash)
     except Exception as e:
+        logger.exception("Auto-import failed while fetching torrent")
         await interaction.followup.send(f"❌ Impossible de récupérer le torrent `{label}` : {e}", ephemeral=True)
         return
 
@@ -1047,6 +1111,7 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     try:
         msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs)
     except Exception as e:
+        logger.exception("Auto-import failed while importing torrent")
         await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
         return
 
@@ -1079,6 +1144,7 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
 @bot.tree.command(name="import", description="Smart import Plex: trie série/film + renomme + refresh.")
 @app_commands.describe(max_items="Nombre max de torrents à importer (défaut 5)")
 async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
+    logger.info("/import called by %s (%s), max_items=%s", interaction.user, interaction.user.id, max_items)
     await interaction.response.defer(ephemeral=True)
 
     moved_items = 0
@@ -1092,6 +1158,7 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
     try:
         completed = await qbit.list_completed()
     except Exception as e:
+        logger.exception("/import failed while listing completed torrents")
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
         return
 
@@ -1171,6 +1238,7 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
             imported_torrents.add(info_hash)
             results.append(msg)
         except Exception as e:
+            logger.exception("/import failed for torrent %s", p.get("name", "???"))
             errors.append(f"{p['name']} ({e})")
 
     # Refresh Plex (si configuré)
@@ -1217,9 +1285,11 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
 async def main():
     if not DISCORD_TOKEN:
         raise RuntimeError("DISCORD_TOKEN manquant dans .env")
+    logger.info("Starting bot...")
     try:
         await bot.start(DISCORD_TOKEN)
     finally:
+        logger.info("Stopping bot...")
         await qbit.close()
 
 if __name__ == "__main__":
