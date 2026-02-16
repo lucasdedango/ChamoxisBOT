@@ -545,7 +545,7 @@ async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> byt
     """
     Télécharge un .torrent depuis Jackett en gérant auth/cookie + cooldown/retry.
     """
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=75)
     base_headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
 
     async def _attempt(use_auth: bool) -> tuple[int, bytes | None, str]:
@@ -571,6 +571,7 @@ async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> byt
         status, payload, detail = await _attempt(False)
         if payload is not None:
             return payload
+        logger.warning("Jackett torrent download attempt failed (status=%s, detail=%s)", status, detail)
         if status in (301, 302, 303, 307, 308, 401, 403, 429, 503):
             if JACKETT_USER or (JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE):
                 logger.info("Jackett torrent download retry (auth=basic/cookie): %s", url)
@@ -789,11 +790,12 @@ class RssSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         logger.info("RSS selection callback by %s (%s)", interaction.user, interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
         idx = int(self.values[0])
         item = self.items[idx]
         url = item.get("enclosure") or item.get("link")
         if not url:
-            await interaction.response.send_message("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
+            await interaction.followup.send("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
             return
         added_via = "URL"
         if not JACKETT_FORCE_UPLOAD:
@@ -801,7 +803,7 @@ class RssSelect(discord.ui.Select):
                 await qbit.add_magnet(url, category=self.category)
                 added_via = "URL"
             except Exception as e:
-                logger.info("URL add failed (%s). Falling back to .torrent upload.", e)
+                logger.warning("URL add failed (%r). Falling back to .torrent upload.", e)
                 added_via = "upload .torrent"
         else:
             added_via = "upload .torrent"
@@ -811,15 +813,15 @@ class RssSelect(discord.ui.Select):
                 torrent_bytes = await download_torrent_with_retry(url)
                 await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=self.category)
             except Exception as e2:
-                logger.error("qBittorrent add failed via upload (%s).", e2)
-                await interaction.response.send_message(
-                    f"❌ Ajout qBittorrent échoué via upload ({e2}).",
+                logger.exception("qBittorrent add failed via upload: %r", e2)
+                await interaction.followup.send(
+                    f"❌ Ajout qBittorrent échoué via upload ({e2!r}).",
                     ephemeral=True,
                 )
                 return
 
         logger.info("Added torrent '%s' via %s (category=%s).", item.get("title", "???"), added_via, self.category)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Ajouté: `{item.get('title', '???')}` (catégorie: {self.category}, méthode: {added_via})",
             ephemeral=True,
         )
@@ -831,7 +833,7 @@ class RssSelect(discord.ui.Select):
             if found and found.get("hash"):
                 remember_tracked_torrent(found["hash"], interaction.user)
         except Exception:
-            pass
+            logger.exception("Failed to track torrent after RSS add")
 
 
 class RssView(discord.ui.View):
