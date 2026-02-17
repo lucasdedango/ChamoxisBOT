@@ -112,6 +112,10 @@ class TrackedTorrent(TypedDict):
 tracked_torrents: Dict[str, TrackedTorrent] = {}
 imported_torrents: set[str] = set()
 
+MAX_SEARCH_RESULTS = 100
+SEASON_SELECT_MAX = 20
+EPISODE_SELECT_MAX = 30
+
 # ----------------- QBITTORRENT CLIENT -----------------
 class QbitClient:
     def __init__(self, base_url: str, user: str, password: str):
@@ -830,6 +834,76 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     logger.info("Import movie completed: display=%s path=%s", display, new_path)
     return display, new_path
 
+
+def is_av1_title(title: str) -> bool:
+    return "av1" in title.lower()
+
+
+def sanitize_series_title(name: str) -> str:
+    base = strip_brackets(name)
+    for pat in SERIES_PATTERNS:
+        m = pat.search(base)
+        if m:
+            base = base[:m.start()]
+            break
+    base = remove_junk_tokens(base)
+    return normalize_spaces(base).strip(" -._")
+
+
+def suggest_target_directories(query: str, kind: str, *, max_items: int = 10) -> List[str]:
+    needle = sanitize_series_title(query) if kind == "series" else remove_junk_tokens(strip_brackets(query))
+    norm_needle = _normalize_for_match(needle)
+    root = PLEX_SERIES if kind == "series" else PLEX_MOVIES
+    if not root.exists() or not root.is_dir():
+        return []
+
+    scored: List[tuple[int, str]] = []
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        n = _normalize_for_match(d.name)
+        if not n:
+            continue
+        score = 0
+        if norm_needle and (norm_needle in n or n in norm_needle):
+            score = 3
+        elif norm_needle:
+            tokens = [t for t in re.split(r"\W+", needle.lower()) if t]
+            overlap = sum(1 for t in tokens if t and t in d.name.lower())
+            if overlap:
+                score = 1 + min(overlap, 2)
+        if score > 0:
+            scored.append((score, d.name))
+
+    scored.sort(key=lambda x: (-x[0], x[1].lower()))
+    names = [name for _, name in scored[:max_items]]
+    if not names:
+        return []
+    dedup: List[str] = []
+    for n in names:
+        if n not in dedup:
+            dedup.append(n)
+    return dedup
+
+
+def extract_quality_options(items: List[Dict[str, str]]) -> List[str]:
+    qualities: List[str] = []
+    for it in items:
+        title = it.get("title", "")
+        for q in ("2160p", "1080p", "720p", "480p"):
+            if q.lower() in title.lower() and q not in qualities:
+                qualities.append(q)
+    return qualities
+
+
+def default_mode_from_query(query: str) -> tuple[str, int, int]:
+    se = extract_season_episode(query)
+    if se:
+        return "series", se[0], se[1]
+    return "movies", 0, 0
+
+
+
 class RssSelect(discord.ui.Select):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
@@ -917,13 +991,12 @@ class RssView(discord.ui.View):
 async def send_jackett_results(
     interaction: discord.Interaction,
     query: str,
-    limit: int,
     kind: str,
     prefs: ImportPrefs | None = None,
     track: bool = True,
     quality: str | None = None,
 ):
-    search_url = build_jackett_search_url(query, limit=max(limit, 1))
+    search_url = build_jackett_search_url(query, limit=MAX_SEARCH_RESULTS)
     try:
         xml_text = await fetch_rss(search_url)
     except Exception as e:
@@ -932,16 +1005,16 @@ async def send_jackett_results(
         return
 
     try:
-        items = parse_rss_feed(xml_text, limit=limit)
+        items = parse_rss_feed(xml_text, limit=MAX_SEARCH_RESULTS)
     except ET.ParseError as e:
         await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
         return
+
+    items = [it for it in items if not is_av1_title(it.get("title", ""))]
     if quality:
         items = [it for it in items if quality_matches(it.get("title", ""), quality)]
 
     items.sort(key=lambda it: parse_size_bytes(it.get("size", "")), reverse=True)
-    if limit > 0:
-        items = items[:limit]
 
     if not items:
         await interaction.followup.send("Aucun résultat pour cette recherche.", ephemeral=True)
@@ -953,9 +1026,12 @@ async def send_jackett_results(
 
     embed = discord.Embed(
         title=f"Jackett ({JACKETT_INDEXER}): résultats pour \"{query}\"",
-        description="\n".join(lines),
+        description="\n".join(lines[:25]),
     )
-    embed.set_footer(text=f"Tri: poids décroissant | Filtre qualité: {quality or 'aucun'}")
+    footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
+    if len(lines) > 25:
+        footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
+    embed.set_footer(text=footer)
 
     category = "movies" if kind.lower().strip() == "movies" else "series"
     view = RssView(items, category, prefs=prefs, track=track)
@@ -1049,6 +1125,183 @@ async def auto_import_latest_for_user(
     remember_tracked_torrent(h, fake_user, prefs)
     logger.info("Fallback mapped torrent hash=%s name=%s for user=%s", h, candidate.get("name", "?"), user_id)
     await auto_import_when_complete(interaction, h, candidate.get("name") or label_hint)
+
+
+class TorrentKindView(discord.ui.View):
+    def __init__(self, query: str, quality: str | None, track: bool, default_kind: str, season: int, episode: int):
+        super().__init__(timeout=180)
+        self.query = query
+        self.quality = quality
+        self.track = track
+        self.default_kind = default_kind
+        self.detected_season = season
+        self.detected_episode = episode
+
+    async def _start(self, interaction: discord.Interaction, kind: str):
+        sugg = suggest_target_directories(self.query, kind)
+        await interaction.response.send_message(
+            "Choisis les options de recherche:",
+            ephemeral=True,
+            view=TorrentOptionView(
+                query=self.query,
+                kind=kind,
+                quality=self.quality,
+                track=self.track,
+                suggested_dirs=sugg,
+                season=self.detected_season,
+                episode=self.detected_episode,
+            ),
+        )
+
+    @discord.ui.button(label="🎬 Film", style=discord.ButtonStyle.primary)
+    async def movie_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._start(interaction, "movies")
+
+    @discord.ui.button(label="📺 Série", style=discord.ButtonStyle.secondary)
+    async def series_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._start(interaction, "series")
+
+
+class TorrentOptionView(discord.ui.View):
+    def __init__(
+        self,
+        query: str,
+        kind: str,
+        quality: str | None,
+        track: bool,
+        suggested_dirs: List[str],
+        season: int = 0,
+        episode: int = 0,
+    ):
+        super().__init__(timeout=300)
+        self.query = query
+        self.kind = kind
+        self.quality = quality
+        self.track = track
+        self.series_mode = "complete"
+        self.season = season
+        self.episode = episode
+        self.target_name: str | None = suggested_dirs[0] if suggested_dirs else None
+
+        if suggested_dirs:
+            options = [discord.SelectOption(label=n[:100], value=n) for n in suggested_dirs[:25]]
+            self.add_item(TorrentDirSelect(options))
+
+        if self.kind == "series":
+            mode_opts = [
+                discord.SelectOption(label="Série complète / saison", value="complete", default=True),
+                discord.SelectOption(label="Épisode unique", value="single"),
+            ]
+            self.add_item(TorrentSeriesModeSelect(mode_opts))
+
+            season_opts = [discord.SelectOption(label=f"Saison {i}", value=str(i), default=(i == (self.season or 1))) for i in range(1, SEASON_SELECT_MAX + 1)]
+            self.add_item(TorrentSeasonSelect(season_opts))
+
+            episode_opts = [discord.SelectOption(label=f"Episode {i}", value=str(i), default=(i == (self.episode or 1))) for i in range(1, EPISODE_SELECT_MAX + 1)]
+            self.add_item(TorrentEpisodeSelect(episode_opts))
+
+        quality_opts = [
+            discord.SelectOption(label="Toutes", value=""),
+            discord.SelectOption(label="2160p", value="2160p"),
+            discord.SelectOption(label="1080p", value="1080p"),
+            discord.SelectOption(label="720p", value="720p"),
+        ]
+        self.add_item(TorrentQualitySelect(quality_opts, selected=self.quality or ""))
+
+    @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        prefs: ImportPrefs = {"kind": self.kind}
+        if self.target_name:
+            prefs["target_name"] = self.target_name
+        if self.kind == "series":
+            prefs["series_mode"] = self.series_mode
+            if self.season > 0:
+                prefs["season"] = self.season
+            if self.series_mode == "single" and self.episode > 0:
+                prefs["episode"] = self.episode
+
+        summary = [
+            f"- Type: {'Série' if self.kind == 'series' else 'Film'}",
+            f"- Qualité: {self.quality or 'Toutes'}",
+            f"- Dossier cible: {self.target_name or 'auto'}",
+        ]
+        if self.kind == "series":
+            summary.append(f"- Mode série: {'Episode' if self.series_mode == 'single' else 'Complet'}")
+            summary.append(f"- Saison: {self.season or 1}")
+            if self.series_mode == "single":
+                summary.append(f"- Episode: {self.episode or 1}")
+
+        await interaction.response.send_message(
+            "Configuration validée. Lancement de la recherche...\n" + "\n".join(summary),
+            ephemeral=True,
+        )
+        await send_jackett_results(
+            interaction,
+            self.query,
+            self.kind,
+            prefs=prefs,
+            track=self.track,
+            quality=self.quality,
+        )
+
+
+class TorrentDirSelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(placeholder="Nom du répertoire cible", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.target_name = self.values[0]
+        await interaction.response.defer()
+
+
+class TorrentSeriesModeSelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(placeholder="Mode série", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.series_mode = self.values[0]
+        await interaction.response.defer()
+
+
+class TorrentSeasonSelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(placeholder="Saison", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.season = int(self.values[0])
+        await interaction.response.defer()
+
+
+class TorrentEpisodeSelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption]):
+        super().__init__(placeholder="Episode (si mode single)", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.episode = int(self.values[0])
+        await interaction.response.defer()
+
+
+class TorrentQualitySelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption], selected: str):
+        for o in options:
+            o.default = (o.value == selected)
+        super().__init__(placeholder="Qualité", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.quality = self.values[0] or None
+        await interaction.response.defer()
+
+
 
 # ----------------- DISCORD EVENTS -----------------
 @bot.event
@@ -1160,28 +1413,18 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="recherchetorrent", description="Recherche un torrent et le place automatiquement.")
+@bot.tree.command(name="recherchetorrent", description="Recherche un torrent rapidement (mode simplifié).")
 @app_commands.describe(
-    query="Texte à rechercher",
-    limit="Nombre d'items à afficher (défaut 5)",
-    kind="movies ou series pour choisir la catégorie qBittorrent",
-    target_name="Nom du dossier cible (ex: Gremlins 2 (1990), Andor (2022))",
-    series_mode="Pour les séries: complete ou single",
-    season="Saison forcée (ex: 2 pour S02)",
-    episode="Episode forcé (pour single)",
-    quality="Filtre qualité (ex: 1080p, 2160p, WEB-DL)",
+    query="Titre ou texte (ex: Friends.S01E01)",
+    quality="Filtre qualité (2160p, 1080p, 720p...)",
+    kind="Optionnel: movies ou series",
     track="Afficher le suivi de téléchargement sur Discord",
 )
 async def recherchetorrent(
     interaction: discord.Interaction,
     query: str,
-    limit: int = 5,
-    kind: str = "movies",
-    target_name: str | None = None,
-    series_mode: str = "complete",
-    season: int = 0,
-    episode: int = 0,
     quality: str | None = None,
+    kind: str | None = None,
     track: bool = True,
 ):
     logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
@@ -1189,20 +1432,46 @@ async def recherchetorrent(
     if not JACKETT_API_KEY:
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
-    logger.info("Jackett search: indexer=%s query=%s limit=%s kind=%s", JACKETT_INDEXER, query, limit, kind)
-    prefs: ImportPrefs = {
-        "kind": "movies" if kind.lower().strip() == "movies" else "series",
-    }
-    if target_name:
-        prefs["target_name"] = target_name.strip()
-    if prefs["kind"] == "series":
-        prefs["series_mode"] = "single" if series_mode.lower().strip() == "single" else "complete"
+
+    default_kind, season, episode = default_mode_from_query(query)
+    chosen_kind = (kind or default_kind).lower().strip()
+    chosen_kind = "movies" if chosen_kind == "movies" else "series" if chosen_kind == "series" else default_kind
+
+    prefs: ImportPrefs = {"kind": chosen_kind}
+    if chosen_kind == "series":
+        prefs["series_mode"] = "single" if episode > 0 else "complete"
         if season > 0:
             prefs["season"] = season
         if episode > 0:
             prefs["episode"] = episode
 
-    await send_jackett_results(interaction, query, limit, kind, prefs=prefs, track=track, quality=quality)
+    await send_jackett_results(interaction, query, chosen_kind, prefs=prefs, track=track, quality=quality)
+
+
+@bot.tree.command(name="torrent", description="Assistant interactif de recherche torrent.")
+@app_commands.describe(
+    query="Titre à chercher (ex: Friends ou Friends.S01E01)",
+    quality="Qualité préférée (optionnel)",
+    track="Afficher le suivi de téléchargement sur Discord",
+)
+async def torrent(interaction: discord.Interaction, query: str, quality: str | None = None, track: bool = True):
+    logger.info("/torrent called by %s (%s)", interaction.user, interaction.user.id)
+    if not JACKETT_API_KEY:
+        await interaction.response.send_message("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
+        return
+
+    default_kind, season, episode = default_mode_from_query(query)
+    content = (
+        "Choisis Film / Série puis affine les options (qualité, saison/épisode, dossier cible), "
+        "et confirme pour lancer la recherche.\n"
+        f"Détection automatique: {'Série' if default_kind == 'series' else 'Film'}"
+    )
+    await interaction.response.send_message(
+        content,
+        view=TorrentKindView(query, quality, track, default_kind, season, episode),
+        ephemeral=True,
+    )
+
 
 
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
@@ -1247,7 +1516,7 @@ async def cleartorrents(interaction: discord.Interaction):
 async def info_cmd(interaction: discord.Interaction):
     text = (
         "**Guide rapide**\n"
-        "1) Utilise `/recherchetorrent` pour chercher.\n"
+        "1) Utilise `/torrent` (assistant interactif) ou `/recherchetorrent` (rapide).\n"
         "2) Choisis `kind` (film/série), puis `target_name` (dossier Plex final).\n"
         "3) Pour une saison, mets `kind=series`, `series_mode=complete`, `season=2` (ex).\n"
         "4) Sélectionne un résultat : le bot ajoute, suit le download et range automatiquement sans `/import`.\n\n"
