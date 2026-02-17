@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import asyncio
 import shutil
 import base64
@@ -80,6 +81,10 @@ SERIES_PATTERNS = [
     re.compile(r"\bS(?P<s>\d{1,2})E(?P<e>\d{1,3})\b", re.IGNORECASE),
     re.compile(r"\b(?P<s>\d{1,2})x(?P<e>\d{1,3})\b", re.IGNORECASE),
 ]
+SEASON_ONLY_PATTERNS = [
+    re.compile(r"\bS(?:aison)?\s*(?P<s>\d{1,2})\b", re.IGNORECASE),
+    re.compile(r"\bSeason\s*(?P<s>\d{1,2})\b", re.IGNORECASE),
+]
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
 JUNK_TOKENS = {
@@ -115,6 +120,40 @@ imported_torrents: set[str] = set()
 MAX_SEARCH_RESULTS = 100
 SEASON_SELECT_MAX = 20
 EPISODE_SELECT_MAX = 30
+KNOWN_USERS_DB = Path("known_users.json")
+known_users: set[int] = set()
+
+
+def load_known_users() -> None:
+    global known_users
+    if not KNOWN_USERS_DB.exists():
+        known_users = set()
+        return
+    try:
+        payload = json.loads(KNOWN_USERS_DB.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Impossible de lire %s", KNOWN_USERS_DB)
+        known_users = set()
+        return
+    if isinstance(payload, list):
+        known_users = {int(v) for v in payload if str(v).isdigit()}
+    else:
+        known_users = set()
+
+
+def save_known_users() -> None:
+    KNOWN_USERS_DB.write_text(
+        json.dumps(sorted(known_users), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def register_known_user(user_id: int) -> bool:
+    if user_id in known_users:
+        return False
+    known_users.add(user_id)
+    save_known_users()
+    return True
 
 # ----------------- QBITTORRENT CLIENT -----------------
 class QbitClient:
@@ -300,6 +339,14 @@ def extract_season_episode(text: str) -> Optional[Tuple[int, int]]:
         m = pat.search(text)
         if m:
             return int(m.group("s")), int(m.group("e"))
+    return None
+
+
+def extract_season_only(text: str) -> Optional[int]:
+    for pat in SEASON_ONLY_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return int(m.group("s"))
     return None
 
 def looks_like_series_name(name: str) -> bool:
@@ -900,6 +947,9 @@ def default_mode_from_query(query: str) -> tuple[str, int, int]:
     se = extract_season_episode(query)
     if se:
         return "series", se[0], se[1]
+    season_only = extract_season_only(query)
+    if season_only:
+        return "series", season_only, 0
     return "movies", 0, 0
 
 
@@ -1128,14 +1178,12 @@ async def auto_import_latest_for_user(
 
 
 class TorrentKindView(discord.ui.View):
-    def __init__(self, query: str, quality: str | None, track: bool, default_kind: str, season: int, episode: int):
+    def __init__(self, query: str, season: int, episode: int, quality: str | None = None):
         super().__init__(timeout=180)
         self.query = query
-        self.quality = quality
-        self.track = track
-        self.default_kind = default_kind
         self.detected_season = season
         self.detected_episode = episode
+        self.quality = quality
 
     async def _start(self, interaction: discord.Interaction, kind: str):
         sugg = suggest_target_directories(self.query, kind)
@@ -1145,11 +1193,10 @@ class TorrentKindView(discord.ui.View):
             view=TorrentOptionView(
                 query=self.query,
                 kind=kind,
-                quality=self.quality,
-                track=self.track,
                 suggested_dirs=sugg,
                 season=self.detected_season,
                 episode=self.detected_episode,
+                quality=self.quality,
             ),
         )
 
@@ -1167,24 +1214,25 @@ class TorrentOptionView(discord.ui.View):
         self,
         query: str,
         kind: str,
-        quality: str | None,
-        track: bool,
         suggested_dirs: List[str],
         season: int = 0,
         episode: int = 0,
+        quality: str | None = None,
     ):
         super().__init__(timeout=300)
         self.query = query
         self.kind = kind
-        self.quality = quality
-        self.track = track
         self.series_mode = "complete"
         self.season = season
         self.episode = episode
-        self.target_name: str | None = suggested_dirs[0] if suggested_dirs else None
+        self.target_name: str | None = None
+        self.quality = quality
+
+        self.add_item(TorrentManualDirButton())
 
         if suggested_dirs:
-            options = [discord.SelectOption(label=n[:100], value=n) for n in suggested_dirs[:25]]
+            options = [discord.SelectOption(label=n[:100], value=n) for n in suggested_dirs[:24]]
+            options.append(discord.SelectOption(label="Répertoire pas dans la liste", value="__manual__"))
             self.add_item(TorrentDirSelect(options))
 
         if self.kind == "series":
@@ -1197,20 +1245,26 @@ class TorrentOptionView(discord.ui.View):
             season_opts = [discord.SelectOption(label=f"Saison {i}", value=str(i), default=(i == (self.season or 1))) for i in range(1, SEASON_SELECT_MAX + 1)]
             self.add_item(TorrentSeasonSelect(season_opts))
 
-
         quality_opts = [
             discord.SelectOption(label="Toutes", value="all"),
             discord.SelectOption(label="2160p", value="2160p"),
             discord.SelectOption(label="1080p", value="1080p"),
             discord.SelectOption(label="720p", value="720p"),
         ]
-        self.add_item(TorrentQualitySelect(quality_opts, selected=self.quality or ""))
+        self.add_item(TorrentQualitySelect(quality_opts, selected=self.quality or "all"))
+
 
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.target_name:
+            await interaction.response.send_message(
+                "⚠️ Choisis un répertoire cible dans la liste ou saisis-le manuellement.",
+                ephemeral=True,
+            )
+            return
+
         prefs: ImportPrefs = {"kind": self.kind}
-        if self.target_name:
-            prefs["target_name"] = self.target_name
+        prefs["target_name"] = self.target_name
         if self.kind == "series":
             prefs["series_mode"] = self.series_mode
             if self.season > 0:
@@ -1221,7 +1275,7 @@ class TorrentOptionView(discord.ui.View):
         summary = [
             f"- Type: {'Série' if self.kind == 'series' else 'Film'}",
             f"- Qualité: {self.quality or 'Toutes'}",
-            f"- Dossier cible: {self.target_name or 'auto'}",
+            f"- Dossier cible: {self.target_name}",
         ]
         if self.kind == "series":
             summary.append(f"- Mode série: {'Episode' if self.series_mode == 'single' else 'Complet'}")
@@ -1238,7 +1292,7 @@ class TorrentOptionView(discord.ui.View):
             self.query,
             self.kind,
             prefs=prefs,
-            track=self.track,
+            track=True,
             quality=self.quality,
         )
 
@@ -1250,8 +1304,44 @@ class TorrentDirSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         parent = self.view
         if isinstance(parent, TorrentOptionView):
-            parent.target_name = self.values[0]
+            selected = self.values[0]
+            if selected == "__manual__":
+                await interaction.response.send_modal(TorrentManualDirModal(parent))
+                return
+            parent.target_name = selected
         await interaction.response.defer()
+
+
+class TorrentManualDirModal(discord.ui.Modal, title="Répertoire cible"):
+    target_input = discord.ui.TextInput(
+        label="Nom du répertoire cible",
+        placeholder="Ex: Andor (2022)",
+        max_length=100,
+    )
+
+    def __init__(self, parent_view: TorrentOptionView):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        value = str(self.target_input.value).strip()
+        if not value:
+            await interaction.response.send_message("⚠️ Le nom du répertoire ne peut pas être vide.", ephemeral=True)
+            return
+        self.parent_view.target_name = value
+        await interaction.response.send_message(f"✅ Répertoire cible défini: `{value}`", ephemeral=True)
+
+
+class TorrentManualDirButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✍️ Saisir un répertoire cible", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if not isinstance(parent, TorrentOptionView):
+            await interaction.response.defer()
+            return
+        await interaction.response.send_modal(TorrentManualDirModal(parent))
 
 
 class TorrentSeriesModeSelect(discord.ui.Select):
@@ -1294,6 +1384,7 @@ class TorrentQualitySelect(discord.ui.Select):
 # ----------------- DISCORD EVENTS -----------------
 @bot.event
 async def setup_hook():
+    load_known_users()
     await qbit.start()
     guild = discord.Object(id=GUILD_ID)
     bot.tree.copy_global_to(guild=guild)
@@ -1308,6 +1399,27 @@ async def on_ready():
 @bot.event
 async def on_error(event: str, *args, **kwargs):
     logger.exception("Unhandled Discord event error on %s", event)
+
+
+
+
+@bot.tree.interaction_check
+async def ensure_user_has_read_info(interaction: discord.Interaction) -> bool:
+    command_name = getattr(getattr(interaction, "command", None), "qualified_name", "")
+    if command_name == "info":
+        return True
+    if interaction.user.id in known_users:
+        return True
+
+    msg = (
+        "👋 Première utilisation détectée. Pour continuer, lance d'abord `/info`.\n"
+        "Cette étape t'explique le fonctionnement du bot et t'enregistre automatiquement."
+    )
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+    return False
 
 
 @bot.tree.error
@@ -1404,16 +1516,10 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
 @bot.tree.command(name="recherchetorrent", description="Assistant interactif de recherche torrent.")
 @app_commands.describe(
     query="Titre à chercher (ex: Friends ou Friends.S01E01)",
-    quality="Qualité préférée (optionnel)",
-    kind="Optionnel: movies ou series",
-    track="Afficher le suivi de téléchargement sur Discord",
 )
 async def recherchetorrent(
     interaction: discord.Interaction,
     query: str,
-    quality: str | None = None,
-    kind: str | None = None,
-    track: bool = True,
 ):
     logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
     if not JACKETT_API_KEY:
@@ -1421,38 +1527,16 @@ async def recherchetorrent(
         return
 
     default_kind, season, episode = default_mode_from_query(query)
-    if kind in {"movies", "series"}:
-        selected_kind = kind
-    else:
-        selected_kind = default_kind
 
     content = (
-        "Choisis Film / Série puis affine les options (qualité, saison, dossier cible), "
+        "Choisis Film / Série puis renseigne les options (dossier cible, saison/épisode), "
         "et confirme pour lancer la recherche.\n"
         f"Détection automatique: {'Série' if default_kind == 'series' else 'Film'}"
     )
 
-    # Si kind est explicitement imposé, on ouvre directement l'étape d'options.
-    if kind in {"movies", "series"}:
-        sugg = suggest_target_directories(query, selected_kind)
-        await interaction.response.send_message(
-            "Choisis les options de recherche:",
-            ephemeral=True,
-            view=TorrentOptionView(
-                query=query,
-                kind=selected_kind,
-                quality=quality,
-                track=track,
-                suggested_dirs=sugg,
-                season=season,
-                episode=episode,
-            ),
-        )
-        return
-
     await interaction.response.send_message(
         content,
-        view=TorrentKindView(query, quality, track, default_kind, season, episode),
+        view=TorrentKindView(query, season, episode, quality=None),
         ephemeral=True,
     )
 
@@ -1496,24 +1580,40 @@ async def cleartorrents(interaction: discord.Interaction):
     await interaction.response.send_message("🧹 Liste des torrents suivis réinitialisée. Les imports futurs concerneront uniquement les nouveaux torrents ajoutés.", ephemeral=True)
 
 
-@bot.tree.command(name="info", description="Explique comment utiliser le bot simplement.")
+@bot.tree.command(name="info", description="Guide complet d'utilisation du bot (obligatoire à la 1re utilisation).")
 async def info_cmd(interaction: discord.Interaction):
+    newly_registered = register_known_user(interaction.user.id)
+    logger.info("/info called by %s (%s), newly_registered=%s", interaction.user, interaction.user.id, newly_registered)
+
     text = (
-        "**Guide rapide**\n"
-        "1) Utilise `/recherchetorrent` (assistant interactif).\n"
-        "2) Choisis `kind` (film/série), puis `target_name` (dossier Plex final).\n"
-        "3) Pour une saison, mets `kind=series`, `series_mode=complete`, `season=2` (ex).\n"
-        "4) Sélectionne un résultat : le bot ajoute, suit le download et range automatiquement sans `/import`.\n\n"
-        "**Exemples**\n"
-        "- Film: `/recherchetorrent query:gremlins 2 kind:movies target_name:Gremlins 2 (1990)`\n"
-        "- Saison 2: `/recherchetorrent query:andor s02 kind:series target_name:Andor (2022) series_mode:complete season:2`\n"
-        "- Episode unique: `/recherchetorrent query:andor s02e03 kind:series target_name:Andor (2022) series_mode:single season:2 episode:3`\n\n"
-        "**Aides**\n"
-        "- `quality` filtre (1080p/2160p/etc).\n"
-        "- Résultats triés par poids décroissant.\n"
-        "- Suivi de progression affiché automatiquement si `track=true`."
+        "**Bienvenue sur ChamoxisBOT 👋**\n\n"
+        "Ce bot sert à chercher des torrents via Jackett, les ajouter dans qBittorrent, "
+        "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
+        "**Étape 1 — Commande principale**\n"
+        "- Lance `/recherchetorrent query:<ton titre>` (ex: `andor s02`, `dune part two`).\n"
+        "- Le bot te demande ensuite Film ou Série.\n"
+        "- Tu choisis (ou saisis) le **répertoire cible exact** (ex: `Andor (2022)`).\n"
+        "- Pour les séries, tu peux préciser le mode (complet/épisode) et la saison.\n"
+        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse.\n\n"
+        "**Ce que fait le bot ensuite**\n"
+        "1) Ajoute le torrent dans qBittorrent.\n"
+        "2) Suit la progression automatiquement.\n"
+        "3) À 100%, range les fichiers dans les bons dossiers Plex (films/séries).\n\n"
+        "**Autres commandes utiles**\n"
+        "- `/status` : voir les derniers torrents et leur état.\n"
+        "- `/rssfeed` : lire un flux RSS Jackett et ajouter un item rapidement.\n"
+        "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
+        "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
+        "**Exemples simples**\n"
+        "- Film: `/recherchetorrent query:gremlins 2` puis dossier `Gremlins 2 (1990)`.\n"
+        "- Série: `/recherchetorrent query:andor s02` puis dossier `Andor (2022)`.\n\n"
+        "**Important**\n"
+        "- Le bot est réservé à un usage légal.\n"
+        "- Si un import est refusé, vérifie que c'est bien ton torrent (protection par utilisateur)."
     )
-    await interaction.response.send_message(text, ephemeral=True)
+
+    prefix = "✅ Ton compte est maintenant enregistré, tu peux utiliser toutes les commandes.\n\n" if newly_registered else "ℹ️ Ton compte est déjà enregistré.\n\n"
+    await interaction.response.send_message(prefix + text, ephemeral=True)
 
 
 async def handle_auto_import(interaction: discord.Interaction, info_hash: str, label: str):
