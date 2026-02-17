@@ -111,7 +111,6 @@ class TrackedTorrent(TypedDict):
 
 tracked_torrents: Dict[str, TrackedTorrent] = {}
 imported_torrents: set[str] = set()
-pending_import_prompts: set[str] = set()
 
 # ----------------- QBITTORRENT CLIENT -----------------
 class QbitClient:
@@ -500,6 +499,21 @@ def human_size(size_str: str) -> str:
     return "?"
 
 
+def parse_size_bytes(size_str: str) -> int:
+    try:
+        return int(size_str)
+    except Exception:
+        return 0
+
+
+def quality_matches(title: str, quality: str | None) -> bool:
+    if not quality:
+        return True
+    q = quality.lower().strip().replace(" ", "")
+    t = title.lower().replace(" ", "")
+    return q in t
+
+
 def build_jackett_search_url(query: str, limit: int = 20) -> str:
     q = urllib.parse.quote_plus(query)
     idx_path = urllib.parse.quote(JACKETT_INDEXER, safe="")
@@ -778,57 +792,6 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     logger.info("Import movie completed: display=%s path=%s", display, new_path)
     return display, new_path
 
-class ConfirmView(discord.ui.View):
-    def __init__(self, *, timeout: float = 60):
-        super().__init__(timeout=timeout)
-        self.value: Optional[bool] = None
-
-    @discord.ui.button(label="Oui", style=discord.ButtonStyle.green)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        self.value = True
-        self.stop()
-        await interaction.response.edit_message(content="Confirmation reçue, import en cours…", view=None)
-
-    @discord.ui.button(label="Non", style=discord.ButtonStyle.red)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        self.value = False
-        self.stop()
-        await interaction.response.edit_message(content="Import annulé sur demande.", view=None)
-
-
-class AutoImportView(discord.ui.View):
-    def __init__(self, info_hash: str, user_id: int, label: str, *, timeout: float = 90):
-        super().__init__(timeout=timeout)
-        self.info_hash = info_hash
-        self.user_id = user_id
-        self.label = label
-
-    def _cleanup(self):
-        pending_import_prompts.discard(self.info_hash)
-
-    async def on_timeout(self) -> None:  # type: ignore[override]
-        self._cleanup()
-        return await super().on_timeout()
-
-    @discord.ui.button(label="Importer maintenant", style=discord.ButtonStyle.green)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Seul l'utilisateur qui a ajouté ce torrent peut l'importer.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        await handle_auto_import(interaction, self.info_hash, self.label)
-        self._cleanup()
-        self.stop()
-
-    @discord.ui.button(label="Plus tard", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        if interaction.response.is_done():
-            return
-        await interaction.response.edit_message(content=f"Import différé pour `{self.label}`.", view=None)
-        self._cleanup()
-        self.stop()
-
-
 class RssSelect(discord.ui.Select):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
@@ -888,6 +851,8 @@ class RssSelect(discord.ui.Select):
                 if self.track:
                     label = item.get("title", "torrent")
                     asyncio.create_task(track_download_progress(interaction, found["hash"], label))
+                else:
+                    asyncio.create_task(auto_import_when_complete(interaction, found["hash"], item.get("title", "torrent")))
         except Exception:
             logger.exception("Failed to track torrent after RSS add")
 
@@ -899,7 +864,15 @@ class RssView(discord.ui.View):
             self.add_item(RssSelect(items, category, prefs=prefs, track=track))
 
 
-async def send_jackett_results(interaction: discord.Interaction, query: str, limit: int, kind: str, prefs: ImportPrefs | None = None, track: bool = True):
+async def send_jackett_results(
+    interaction: discord.Interaction,
+    query: str,
+    limit: int,
+    kind: str,
+    prefs: ImportPrefs | None = None,
+    track: bool = True,
+    quality: str | None = None,
+):
     search_url = build_jackett_search_url(query, limit=max(limit, 1))
     try:
         xml_text = await fetch_rss(search_url)
@@ -913,6 +886,13 @@ async def send_jackett_results(interaction: discord.Interaction, query: str, lim
     except ET.ParseError as e:
         await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
         return
+    if quality:
+        items = [it for it in items if quality_matches(it.get("title", ""), quality)]
+
+    items.sort(key=lambda it: parse_size_bytes(it.get("size", "")), reverse=True)
+    if limit > 0:
+        items = items[:limit]
+
     if not items:
         await interaction.followup.send("Aucun résultat pour cette recherche.", ephemeral=True)
         return
@@ -925,7 +905,7 @@ async def send_jackett_results(interaction: discord.Interaction, query: str, lim
         title=f"Jackett ({JACKETT_INDEXER}): résultats pour \"{query}\"",
         description="\n".join(lines),
     )
-    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
+    embed.set_footer(text=f"Tri: poids décroissant | Filtre qualité: {quality or 'aucun'}")
 
     category = "movies" if kind.lower().strip() == "movies" else "series"
     view = RssView(items, category, prefs=prefs, track=track)
@@ -962,19 +942,31 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
 
         if progress >= 100 or state.lower().startswith("stalledup") or state.lower().startswith("upload"):
             await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
-            if info_hash in pending_import_prompts:
-                return
-            pending_import_prompts.add(info_hash)
-            view = AutoImportView(info_hash, interaction.user.id, label)
-            await interaction.followup.send(
-                f"📦 Télécharger terminé pour `{label}`. Importer maintenant ?",
-                view=view,
-                ephemeral=True,
-            )
+            await handle_auto_import(interaction, info_hash, label)
             return
         await asyncio.sleep(5)
 
     await message.edit(content="⚠️ Suivi arrêté après délai — dernier état affiché.")
+
+
+async def auto_import_when_complete(interaction: discord.Interaction, info_hash: str, label: str):
+    """
+    Version silencieuse: attend la fin du torrent puis lance l'import auto.
+    """
+    for _ in range(240):  # ~20 min
+        try:
+            info = await qbit.get_torrent_by_hash(info_hash)
+        except Exception:
+            logger.exception("Silent auto-import polling failed for hash=%s", info_hash)
+            return
+        if not info:
+            return
+        progress = float(info.get("progress", 0.0))
+        state = str(info.get("state", "")).lower()
+        if progress >= 1.0 or state.startswith("upload") or state.startswith("stalledup"):
+            await handle_auto_import(interaction, info_hash, label)
+            return
+        await asyncio.sleep(5)
 
 # ----------------- DISCORD EVENTS -----------------
 @bot.event
@@ -1067,6 +1059,10 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
         await interaction.followup.send("Flux RSS vide ou non lisible.", ephemeral=True)
         return
 
+    items.sort(key=lambda it: parse_size_bytes(it.get("size", "")), reverse=True)
+    if limit > 0:
+        items = items[:limit]
+
     lines = []
     for idx, item in enumerate(items, start=1):
         lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
@@ -1082,7 +1078,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="jackettsearch", description="Recherche via Jackett et ajoute un torrent.")
+@bot.tree.command(name="recherchetorrent", description="Recherche un torrent et le place automatiquement.")
 @app_commands.describe(
     query="Texte à rechercher",
     limit="Nombre d'items à afficher (défaut 5)",
@@ -1091,9 +1087,10 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     series_mode="Pour les séries: complete ou single",
     season="Saison forcée (ex: 2 pour S02)",
     episode="Episode forcé (pour single)",
+    quality="Filtre qualité (ex: 1080p, 2160p, WEB-DL)",
     track="Afficher le suivi de téléchargement sur Discord",
 )
-async def jackettsearch(
+async def recherchetorrent(
     interaction: discord.Interaction,
     query: str,
     limit: int = 5,
@@ -1102,9 +1099,10 @@ async def jackettsearch(
     series_mode: str = "complete",
     season: int = 0,
     episode: int = 0,
+    quality: str | None = None,
     track: bool = True,
 ):
-    logger.info("/jackettsearch called by %s (%s)", interaction.user, interaction.user.id)
+    logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
     if not JACKETT_API_KEY:
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
@@ -1122,7 +1120,7 @@ async def jackettsearch(
         if episode > 0:
             prefs["episode"] = episode
 
-    await send_jackett_results(interaction, query, limit, kind, prefs=prefs, track=track)
+    await send_jackett_results(interaction, query, limit, kind, prefs=prefs, track=track, quality=quality)
 
 
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
@@ -1160,8 +1158,27 @@ async def cleartorrents(interaction: discord.Interaction):
     logger.info("/cleartorrents called by %s (%s)", interaction.user, interaction.user.id)
     tracked_torrents.clear()
     imported_torrents.clear()
-    pending_import_prompts.clear()
     await interaction.response.send_message("🧹 Liste des torrents suivis réinitialisée. Les imports futurs concerneront uniquement les nouveaux torrents ajoutés.", ephemeral=True)
+
+
+@bot.tree.command(name="info", description="Explique comment utiliser le bot simplement.")
+async def info_cmd(interaction: discord.Interaction):
+    text = (
+        "**Guide rapide**\n"
+        "1) Utilise `/recherchetorrent` pour chercher.\n"
+        "2) Choisis `kind` (film/série), puis `target_name` (dossier Plex final).\n"
+        "3) Pour une saison, mets `kind=series`, `series_mode=complete`, `season=2` (ex).\n"
+        "4) Sélectionne un résultat : le bot ajoute, suit le download et range automatiquement sans `/import`.\n\n"
+        "**Exemples**\n"
+        "- Film: `/recherchetorrent query:gremlins 2 kind:movies target_name:Gremlins 2 (1990)`\n"
+        "- Saison 2: `/recherchetorrent query:andor s02 kind:series target_name:Andor (2022) series_mode:complete season:2`\n"
+        "- Episode unique: `/recherchetorrent query:andor s02e03 kind:series target_name:Andor (2022) series_mode:single season:2 episode:3`\n\n"
+        "**Aides**\n"
+        "- `quality` filtre (1080p/2160p/etc).\n"
+        "- Résultats triés par poids décroissant.\n"
+        "- Suivi de progression affiché automatiquement si `track=true`."
+    )
+    await interaction.response.send_message(text, ephemeral=True)
 
 
 async def handle_auto_import(interaction: discord.Interaction, info_hash: str, label: str):
@@ -1216,146 +1233,6 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     embed.add_field(name="Fichiers déplacés", value=str(moved_files), inline=True)
     if move_logs:
         embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
-    if refresh_lines:
-        embed.add_field(name="🔄 Plex", value="\n".join(refresh_lines), inline=False)
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="import", description="Smart import Plex: trie série/film + renomme + refresh.")
-@app_commands.describe(max_items="Nombre max de torrents à importer (défaut 5)")
-async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
-    logger.info("/import called by %s (%s), max_items=%s", interaction.user, interaction.user.id, max_items)
-    await interaction.response.defer(ephemeral=True)
-
-    moved_items = 0
-    moved_files = 0
-    did_movies = False
-    did_series = False
-    results: List[str] = []
-    skipped: List[str] = []
-    errors: List[str] = []
-
-    try:
-        completed = await qbit.list_completed()
-    except Exception as e:
-        logger.exception("/import failed while listing completed torrents")
-        await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
-        return
-
-    if not completed:
-        await interaction.followup.send("Aucun torrent terminé à importer.", ephemeral=True)
-        return
-
-    planned = []
-    skipped_full = []
-    for t in completed:
-        info_hash = t.get("hash", "")
-        ok, reason = check_user_ownership(info_hash, interaction.user.id)
-        if not ok:
-            skipped_full.append(f"{t.get('name', '???')} ({reason})")
-            continue
-
-        if info_hash in imported_torrents:
-            skipped_full.append(f"{t.get('name', '???')} (déjà importé)")
-            continue
-
-        category = (t.get("category") or "").lower().strip()
-        content_root = pick_content_path(t)
-        if not content_root:
-            skipped_full.append(f"{t.get('name', '???')} (chemin introuvable)")
-            continue
-
-        is_series = (category == "series") or looks_like_series_name(t.get("name", "???"))
-        is_forced_movie = (category == "movies")
-        planned.append({
-            "torrent": t,
-            "name": t.get("name", "???"),
-            "content_root": content_root,
-            "is_series": is_series and not is_forced_movie,
-        })
-
-        if len(planned) >= max_items:
-            break
-
-    skipped = skipped_full
-
-    if not planned and not skipped:
-        await interaction.followup.send("Aucun torrent prêt à être importé.", ephemeral=True)
-        return
-
-    plan_lines = [f"- `{p['name']}` → {'série' if p['is_series'] else 'film'} (source: `{p['content_root']}`)" for p in planned[:10]]
-    if len(planned) > 10:
-        plan_lines.append(f"+ {len(planned) - 10} autres…")
-
-    confirm_embed = discord.Embed(
-        title="Confirmer l'import ?",
-        description="Le bot va déplacer et renommer les fichiers comme indiqué ci-dessous.",
-    )
-    if plan_lines:
-        confirm_embed.add_field(name="Plan", value="\n".join(plan_lines), inline=False)
-    if skipped:
-        confirm_embed.add_field(name="⚠️ Ignorés", value="\n".join(f"- {x}" for x in skipped[:10]), inline=False)
-
-    view = ConfirmView(timeout=120)
-    prompt_msg = await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
-    await view.wait()
-    await prompt_msg.edit(view=None)
-
-    if view.value is not True:
-        await interaction.followup.send("Import annulé.", ephemeral=True)
-        return
-
-    move_logs: List[str] = []
-    for p in planned:
-        torrent = p["torrent"]
-        info_hash = torrent.get("hash", "")
-        try:
-            msg, ds, dm, moved, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
-            did_series = did_series or ds
-            did_movies = did_movies or dm
-            moved_items += 1
-            moved_files += moved
-            imported_torrents.add(info_hash)
-            results.append(msg)
-        except Exception as e:
-            logger.exception("/import failed for torrent %s", p.get("name", "???"))
-            errors.append(f"{p['name']} ({e})")
-
-    # Refresh Plex (si configuré)
-    refresh_lines = []
-    if moved_items > 0:
-        if did_movies and PLEX_MOVIES_SECTION_ID:
-            ok, msg = await plex_refresh(PLEX_MOVIES_SECTION_ID)
-            refresh_lines.append(f"🎬 Movies refresh: {'OK' if ok else 'KO'} ({msg})")
-        if did_series and PLEX_SERIES_SECTION_ID:
-            ok, msg = await plex_refresh(PLEX_SERIES_SECTION_ID)
-            refresh_lines.append(f"📺 Series refresh: {'OK' if ok else 'KO'} ({msg})")
-        if not refresh_lines and (PLEX_URL and PLEX_TOKEN):
-            refresh_lines.append("ℹ️ Plex configuré mais section id manquant.")
-        if not (PLEX_URL and PLEX_TOKEN):
-            refresh_lines.append("ℹ️ Plex refresh non configuré (scan auto Plex devrait suffire).")
-
-    # Embed stylé
-    total_candidates = len(planned) + len(skipped)
-    embed = discord.Embed(
-        title="📦 Smart Import Plex",
-        description=f"Torrents considérés: **{total_candidates}** | Importés: **{moved_items}** | Fichiers déplacés: **{moved_files}**",
-    )
-
-    if results:
-        embed.add_field(name="✅ Résultats", value="\n".join(results[:12]), inline=False)
-        if len(results) > 12:
-            embed.add_field(name="…", value=f"+ {len(results) - 12} autres", inline=False)
-
-    if 'move_logs' in locals() and move_logs:
-        embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
-
-    if skipped:
-        embed.add_field(name="⚠️ Ignorés", value="\n".join(f"- {x}" for x in skipped[:10]), inline=False)
-
-    if errors:
-        embed.add_field(name="❌ Erreurs", value="\n".join(f"- {x}" for x in errors[:10]), inline=False)
-
     if refresh_lines:
         embed.add_field(name="🔄 Plex", value="\n".join(refresh_lines), inline=False)
 
