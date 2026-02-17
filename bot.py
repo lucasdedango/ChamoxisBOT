@@ -81,6 +81,10 @@ SERIES_PATTERNS = [
     re.compile(r"\bS(?P<s>\d{1,2})E(?P<e>\d{1,3})\b", re.IGNORECASE),
     re.compile(r"\b(?P<s>\d{1,2})x(?P<e>\d{1,3})\b", re.IGNORECASE),
 ]
+SEASON_ONLY_PATTERNS = [
+    re.compile(r"\bS(?:aison)?\s*(?P<s>\d{1,2})\b", re.IGNORECASE),
+    re.compile(r"\bSeason\s*(?P<s>\d{1,2})\b", re.IGNORECASE),
+]
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
 JUNK_TOKENS = {
@@ -335,6 +339,14 @@ def extract_season_episode(text: str) -> Optional[Tuple[int, int]]:
         m = pat.search(text)
         if m:
             return int(m.group("s")), int(m.group("e"))
+    return None
+
+
+def extract_season_only(text: str) -> Optional[int]:
+    for pat in SEASON_ONLY_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return int(m.group("s"))
     return None
 
 def looks_like_series_name(name: str) -> bool:
@@ -935,6 +947,9 @@ def default_mode_from_query(query: str) -> tuple[str, int, int]:
     se = extract_season_episode(query)
     if se:
         return "series", se[0], se[1]
+    season_only = extract_season_only(query)
+    if season_only:
+        return "series", season_only, 0
     return "movies", 0, 0
 
 
