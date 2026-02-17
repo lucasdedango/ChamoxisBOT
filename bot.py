@@ -1163,11 +1163,12 @@ async def auto_import_latest_for_user(
 
 
 class TorrentKindView(discord.ui.View):
-    def __init__(self, query: str, season: int, episode: int):
+    def __init__(self, query: str, season: int, episode: int, quality: str | None = None):
         super().__init__(timeout=180)
         self.query = query
         self.detected_season = season
         self.detected_episode = episode
+        self.quality = quality
 
     async def _start(self, interaction: discord.Interaction, kind: str):
         sugg = suggest_target_directories(self.query, kind)
@@ -1180,6 +1181,7 @@ class TorrentKindView(discord.ui.View):
                 suggested_dirs=sugg,
                 season=self.detected_season,
                 episode=self.detected_episode,
+                quality=self.quality,
             ),
         )
 
@@ -1200,6 +1202,7 @@ class TorrentOptionView(discord.ui.View):
         suggested_dirs: List[str],
         season: int = 0,
         episode: int = 0,
+        quality: str | None = None,
     ):
         super().__init__(timeout=300)
         self.query = query
@@ -1208,6 +1211,7 @@ class TorrentOptionView(discord.ui.View):
         self.season = season
         self.episode = episode
         self.target_name: str | None = None
+        self.quality = quality
 
         self.add_item(TorrentManualDirButton())
 
@@ -1225,6 +1229,14 @@ class TorrentOptionView(discord.ui.View):
 
             season_opts = [discord.SelectOption(label=f"Saison {i}", value=str(i), default=(i == (self.season or 1))) for i in range(1, SEASON_SELECT_MAX + 1)]
             self.add_item(TorrentSeasonSelect(season_opts))
+
+        quality_opts = [
+            discord.SelectOption(label="Toutes", value="all"),
+            discord.SelectOption(label="2160p", value="2160p"),
+            discord.SelectOption(label="1080p", value="1080p"),
+            discord.SelectOption(label="720p", value="720p"),
+        ]
+        self.add_item(TorrentQualitySelect(quality_opts, selected=self.quality or "all"))
 
 
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
@@ -1247,6 +1259,7 @@ class TorrentOptionView(discord.ui.View):
 
         summary = [
             f"- Type: {'Série' if self.kind == 'series' else 'Film'}",
+            f"- Qualité: {self.quality or 'Toutes'}",
             f"- Dossier cible: {self.target_name}",
         ]
         if self.kind == "series":
@@ -1265,7 +1278,7 @@ class TorrentOptionView(discord.ui.View):
             self.kind,
             prefs=prefs,
             track=True,
-            quality=None,
+            quality=self.quality,
         )
 
 
@@ -1337,6 +1350,19 @@ class TorrentSeasonSelect(discord.ui.Select):
             parent.season = int(self.values[0])
         await interaction.response.defer()
 
+
+
+class TorrentQualitySelect(discord.ui.Select):
+    def __init__(self, options: List[discord.SelectOption], selected: str):
+        for o in options:
+            o.default = (o.value == selected)
+        super().__init__(placeholder="Qualité", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if isinstance(parent, TorrentOptionView):
+            parent.quality = None if self.values[0] == "all" else self.values[0]
+        await interaction.response.defer()
 
 
 
@@ -1495,7 +1521,7 @@ async def recherchetorrent(
 
     await interaction.response.send_message(
         content,
-        view=TorrentKindView(query, season, episode),
+        view=TorrentKindView(query, season, episode, quality=None),
         ephemeral=True,
     )
 
