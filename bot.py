@@ -95,9 +95,18 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+class ImportPrefs(TypedDict, total=False):
+    kind: str
+    target_name: str
+    series_mode: str
+    season: int
+    episode: int
+
+
 class TrackedTorrent(TypedDict):
     user_id: int
     user_label: str
+    prefs: ImportPrefs
 
 
 tracked_torrents: Dict[str, TrackedTorrent] = {}
@@ -419,14 +428,22 @@ def find_torrent_by_name_sync(items: List[dict], name: str) -> Optional[dict]:
     return None
 
 
-def remember_tracked_torrent(info_hash: str, user: discord.abc.User):
+def remember_tracked_torrent(info_hash: str, user: discord.abc.User, prefs: ImportPrefs | None = None):
     """
     Enregistre un torrent comme suivi pour un utilisateur précis.
     """
     tracked_torrents[info_hash] = {
         "user_id": user.id,
         "user_label": user.display_name or user.name,
+        "prefs": prefs or {},
     }
+
+
+def get_tracked_prefs(info_hash: str) -> ImportPrefs:
+    tracked = tracked_torrents.get(info_hash)
+    if not tracked:
+        return {}
+    return tracked.get("prefs", {})
 
 
 def check_user_ownership(info_hash: str, user_id: int) -> Tuple[bool, str]:
@@ -451,12 +468,14 @@ def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
         link = (item.findtext("link") or "").strip()
         enclosure = item.find("enclosure")
         enclosure_url = enclosure.attrib.get("url") if enclosure is not None else ""
+        enclosure_length = enclosure.attrib.get("length") if enclosure is not None else ""
         pub_date = (item.findtext("pubDate") or "").strip()
         items.append(
             {
                 "title": title,
                 "link": link,
                 "enclosure": enclosure_url,
+                "size": enclosure_length or "",
                 "pub_date": pub_date,
             }
         )
@@ -467,6 +486,18 @@ def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
 
 def shorten(text: str, max_len: int = 90) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def human_size(size_str: str) -> str:
+    try:
+        n = float(size_str)
+    except Exception:
+        return "?"
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f}{unit}"
+        n /= 1024
+    return "?"
 
 
 def build_jackett_search_url(query: str, limit: int = 20) -> str:
@@ -585,7 +616,7 @@ async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> byt
     raise RuntimeError(f"Téléchargement .torrent échoué: {last_error}")
 
 
-async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str, bool, bool, int, str]:
+async def import_torrent_entry(torrent: dict, move_logs: List[str], prefs: ImportPrefs | None = None) -> Tuple[str, bool, bool, int, str]:
     """
     Retourne (message, did_series, did_movies, moved_files, info_hash)
     """
@@ -596,8 +627,15 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str
         raise RuntimeError("chemin introuvable")
 
     info_hash = torrent.get("hash", "")
+    prefs = prefs or get_tracked_prefs(info_hash)
     is_series = (category == "series") or looks_like_series_name(torrent_name)
     is_forced_movie = (category == "movies")
+    if prefs.get("kind") == "movies":
+        is_series = False
+        is_forced_movie = True
+    elif prefs.get("kind") == "series":
+        is_series = True
+        is_forced_movie = False
     logger.info(
         "Import entry: name=%s hash=%s category=%s is_series=%s forced_movie=%s source=%s",
         torrent_name,
@@ -609,23 +647,24 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str]) -> Tuple[str
     )
 
     if is_series and not is_forced_movie:
-        show, n = await import_series(torrent_name, info_hash, content_root, move_logs)
+        show, n = await import_series(torrent_name, info_hash, content_root, move_logs, prefs)
         target_path = PLEX_SERIES / show
         msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
         return msg, True, False, n, info_hash
 
-    display, new_path = await import_movie(torrent_name, info_hash, content_root, move_logs)
+    display, new_path = await import_movie(torrent_name, info_hash, content_root, move_logs, prefs)
     msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
     return msg, False, True, 1, info_hash
 
 # ----------------- IMPORT LOGIC -----------------
-async def import_series(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, int]:
+async def import_series(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, int]:
     r"""
     Déplace TOUS les fichiers vidéo de la série:
     series\Show\Season XX\Show - SXXEYY.ext
     Retourne (show_title, nb_fichiers_deplaces)
     """
-    show = guess_show_title_from_torrent(torrent_name)
+    prefs = prefs or {}
+    show = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
@@ -653,10 +692,16 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     season_counts: Dict[int, int] = {}
 
     # 1) fichiers avec S/E
+    series_mode = prefs.get("series_mode", "complete")
+    forced_season = int(prefs.get("season", 0) or 0)
+    forced_episode = int(prefs.get("episode", 0) or 0)
+
     for season, ep, f in known:
         season_counts[season] = season_counts.get(season, 0) + 1
-        season_dir = Path(f"Season {season:02d}")
-        new_filename = f"{show} - S{season:02d}E{ep:02d}{f.suffix.lower()}"
+        use_season = forced_season if forced_season > 0 else season
+        use_episode = forced_episode if (series_mode == "single" and forced_episode > 0) else ep
+        season_dir = Path(f"S{use_season:02d}")
+        new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
@@ -678,8 +723,10 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     ep_counter = max_ep + 1 if max_ep > 0 else 1
 
     for f in unknown:
-        season_dir = Path(f"Season {guessed_season:02d}")
-        new_filename = f"{show} - S{guessed_season:02d}E{ep_counter:02d}{f.suffix.lower()}"
+        use_season = forced_season if forced_season > 0 else guessed_season
+        use_episode = forced_episode if (series_mode == "single" and forced_episode > 0) else ep_counter
+        season_dir = Path(f"S{use_season:02d}")
+        new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
@@ -692,7 +739,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     logger.info("Import series completed: show=%s moved=%s", show, moved)
     return show, moved
 
-async def import_movie(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None) -> Tuple[str, Path]:
+async def import_movie(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, Path]:
     r"""
     Déplace le plus gros fichier vidéo en:
     movies\Title (Year)\Title (Year).ext
@@ -707,8 +754,12 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     if not video:
         raise RuntimeError("aucune vidéo trouvée")
 
-    title, year = build_movie_title_and_year(video.stem)
-    display = f"{title} ({year})" if year else title
+    prefs = prefs or {}
+    if prefs.get("target_name"):
+        display = prefs["target_name"]
+    else:
+        title, year = build_movie_title_and_year(video.stem)
+        display = f"{title} ({year})" if year else title
 
     movie_dir = PLEX_MOVIES / display
     ensure_dir(movie_dir)
@@ -779,7 +830,7 @@ class AutoImportView(discord.ui.View):
 
 
 class RssSelect(discord.ui.Select):
-    def __init__(self, items: List[Dict[str, str]], category: str):
+    def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
         for idx, item in enumerate(items):
             label = shorten(item["title"], 90)
@@ -787,6 +838,8 @@ class RssSelect(discord.ui.Select):
         super().__init__(placeholder="Choisis un torrent à ajouter", options=options, min_values=1, max_values=1)
         self.items = items
         self.category = category
+        self.prefs = prefs or {}
+        self.track = track
 
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         logger.info("RSS selection callback by %s (%s)", interaction.user, interaction.user.id)
@@ -831,19 +884,22 @@ class RssSelect(discord.ui.Select):
             recent = await qbit.list_torrents(limit=30)
             found = find_torrent_by_name_sync(recent, item.get("title", ""))
             if found and found.get("hash"):
-                remember_tracked_torrent(found["hash"], interaction.user)
+                remember_tracked_torrent(found["hash"], interaction.user, self.prefs)
+                if self.track:
+                    label = item.get("title", "torrent")
+                    asyncio.create_task(track_download_progress(interaction, found["hash"], label))
         except Exception:
             logger.exception("Failed to track torrent after RSS add")
 
 
 class RssView(discord.ui.View):
-    def __init__(self, items: List[Dict[str, str]], category: str, *, timeout: float = 120):
+    def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True, *, timeout: float = 120):
         super().__init__(timeout=timeout)
         if items:
-            self.add_item(RssSelect(items, category))
+            self.add_item(RssSelect(items, category, prefs=prefs, track=track))
 
 
-async def send_jackett_results(interaction: discord.Interaction, query: str, limit: int, kind: str):
+async def send_jackett_results(interaction: discord.Interaction, query: str, limit: int, kind: str, prefs: ImportPrefs | None = None, track: bool = True):
     search_url = build_jackett_search_url(query, limit=max(limit, 1))
     try:
         xml_text = await fetch_rss(search_url)
@@ -863,7 +919,7 @@ async def send_jackett_results(interaction: discord.Interaction, query: str, lim
 
     lines = []
     for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
+        lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
         title=f"Jackett ({JACKETT_INDEXER}): résultats pour \"{query}\"",
@@ -872,7 +928,7 @@ async def send_jackett_results(interaction: discord.Interaction, query: str, lim
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
 
     category = "movies" if kind.lower().strip() == "movies" else "series"
-    view = RssView(items, category)
+    view = RssView(items, category, prefs=prefs, track=track)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -1013,7 +1069,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
 
     lines = []
     for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} (`{item.get('pub_date','')}`)")
+        lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
         title="Flux RSS (Jackett)",
@@ -1022,7 +1078,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
 
     category = "movies" if kind.lower().strip() == "movies" else "series"
-    view = RssView(items, category)
+    view = RssView(items, category, track=True)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -1031,12 +1087,22 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     query="Texte à rechercher",
     limit="Nombre d'items à afficher (défaut 5)",
     kind="movies ou series pour choisir la catégorie qBittorrent",
+    target_name="Nom du dossier cible (ex: Gremlins 2 (1990), Andor (2022))",
+    series_mode="Pour les séries: complete ou single",
+    season="Saison forcée (ex: 2 pour S02)",
+    episode="Episode forcé (pour single)",
+    track="Afficher le suivi de téléchargement sur Discord",
 )
 async def jackettsearch(
     interaction: discord.Interaction,
     query: str,
     limit: int = 5,
     kind: str = "movies",
+    target_name: str | None = None,
+    series_mode: str = "complete",
+    season: int = 0,
+    episode: int = 0,
+    track: bool = True,
 ):
     logger.info("/jackettsearch called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
@@ -1044,7 +1110,19 @@ async def jackettsearch(
         await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
     logger.info("Jackett search: indexer=%s query=%s limit=%s kind=%s", JACKETT_INDEXER, query, limit, kind)
-    await send_jackett_results(interaction, query, limit, kind)
+    prefs: ImportPrefs = {
+        "kind": "movies" if kind.lower().strip() == "movies" else "series",
+    }
+    if target_name:
+        prefs["target_name"] = target_name.strip()
+    if prefs["kind"] == "series":
+        prefs["series_mode"] = "single" if series_mode.lower().strip() == "single" else "complete"
+        if season > 0:
+            prefs["season"] = season
+        if episode > 0:
+            prefs["episode"] = episode
+
+    await send_jackett_results(interaction, query, limit, kind, prefs=prefs, track=track)
 
 
 @bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
@@ -1111,7 +1189,7 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
 
     move_logs: List[str] = []
     try:
-        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs)
+        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
     except Exception as e:
         logger.exception("Auto-import failed while importing torrent")
         await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
@@ -1232,7 +1310,7 @@ async def import_cmd(interaction: discord.Interaction, max_items: int = 5):
         torrent = p["torrent"]
         info_hash = torrent.get("hash", "")
         try:
-            msg, ds, dm, moved, _ = await import_torrent_entry(torrent, move_logs)
+            msg, ds, dm, moved, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
             did_series = did_series or ds
             did_movies = did_movies or dm
             moved_items += 1
