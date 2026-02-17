@@ -427,6 +427,44 @@ def find_torrent_by_name_sync(items: List[dict], name: str) -> Optional[dict]:
     return None
 
 
+def _normalize_for_match(text: str) -> str:
+    t = normalize_spaces(text).lower()
+    t = re.sub(r"[^a-z0-9]+", "", t)
+    return t
+
+
+def find_recent_torrent_candidate(items: List[dict], *, title: str, category: str) -> Optional[dict]:
+    """
+    Trouve le torrent le plus probable juste après un ajout Jackett.
+    Stratégies:
+    1) nom exact
+    2) nom normalisé (équivalent / inclusion)
+    3) fallback: dernier torrent de même catégorie
+    """
+    if not items:
+        return None
+
+    exact = find_torrent_by_name_sync(items, title)
+    if exact:
+        return exact
+
+    wanted = _normalize_for_match(title)
+    if wanted:
+        for t in items:
+            n = _normalize_for_match(t.get("name", ""))
+            if not n:
+                continue
+            if n == wanted or wanted in n or n in wanted:
+                return t
+
+    same_cat = [t for t in items if (t.get("category") or "").strip().lower() == category.strip().lower()]
+    if same_cat:
+        same_cat.sort(key=lambda x: int(x.get("added_on", 0)), reverse=True)
+        return same_cat[0]
+
+    return None
+
+
 def remember_tracked_torrent(info_hash: str, user: discord.abc.User, prefs: ImportPrefs | None = None):
     """
     Enregistre un torrent comme suivi pour un utilisateur précis.
@@ -845,14 +883,26 @@ class RssSelect(discord.ui.Select):
         # Tentative de retrouver le hash pour le suivi
         try:
             recent = await qbit.list_torrents(limit=30)
-            found = find_torrent_by_name_sync(recent, item.get("title", ""))
+            found = find_recent_torrent_candidate(
+                recent,
+                title=item.get("title", ""),
+                category=self.category,
+            )
             if found and found.get("hash"):
-                remember_tracked_torrent(found["hash"], interaction.user, self.prefs)
+                h = found["hash"]
+                remember_tracked_torrent(h, interaction.user, self.prefs)
+                label = found.get("name") or item.get("title", "torrent")
                 if self.track:
-                    label = item.get("title", "torrent")
-                    asyncio.create_task(track_download_progress(interaction, found["hash"], label))
+                    asyncio.create_task(track_download_progress(interaction, h, label))
                 else:
-                    asyncio.create_task(auto_import_when_complete(interaction, found["hash"], item.get("title", "torrent")))
+                    asyncio.create_task(auto_import_when_complete(interaction, h, label))
+            else:
+                logger.warning(
+                    "No matching torrent hash found right after add, scheduling broad fallback auto-import. title=%s category=%s",
+                    item.get("title", ""),
+                    self.category,
+                )
+                asyncio.create_task(auto_import_latest_for_user(interaction, interaction.user.id, self.category, self.prefs, item.get("title", "torrent")))
         except Exception:
             logger.exception("Failed to track torrent after RSS add")
 
@@ -967,6 +1017,38 @@ async def auto_import_when_complete(interaction: discord.Interaction, info_hash:
             await handle_auto_import(interaction, info_hash, label)
             return
         await asyncio.sleep(5)
+
+
+async def auto_import_latest_for_user(
+    interaction: discord.Interaction,
+    user_id: int,
+    category: str,
+    prefs: ImportPrefs,
+    label_hint: str,
+):
+    """
+    Fallback ultime si on n'arrive pas à mapper immédiatement le hash ajouté.
+    Cherche le dernier torrent de la catégorie, l'associe à l'utilisateur, puis attend la fin pour importer.
+    """
+    try:
+        await asyncio.sleep(3)
+        recent = await qbit.list_torrents(limit=30)
+    except Exception:
+        logger.exception("Fallback lookup failed (unable to list torrents)")
+        return
+
+    candidate = find_recent_torrent_candidate(recent, title=label_hint, category=category)
+    if not candidate or not candidate.get("hash"):
+        logger.warning("Fallback lookup found no candidate for label=%s category=%s", label_hint, category)
+        return
+
+    h = candidate["hash"]
+    fake_user = interaction.user
+    if fake_user.id != user_id:
+        return
+    remember_tracked_torrent(h, fake_user, prefs)
+    logger.info("Fallback mapped torrent hash=%s name=%s for user=%s", h, candidate.get("name", "?"), user_id)
+    await auto_import_when_complete(interaction, h, candidate.get("name") or label_hint)
 
 # ----------------- DISCORD EVENTS -----------------
 @bot.event
