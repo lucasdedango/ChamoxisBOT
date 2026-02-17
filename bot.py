@@ -1181,10 +1181,13 @@ class TorrentOptionView(discord.ui.View):
         self.series_mode = "complete"
         self.season = season
         self.episode = episode
-        self.target_name: str | None = suggested_dirs[0] if suggested_dirs else None
+        self.target_name: str | None = None
+
+        self.add_item(TorrentManualDirButton())
 
         if suggested_dirs:
-            options = [discord.SelectOption(label=n[:100], value=n) for n in suggested_dirs[:25]]
+            options = [discord.SelectOption(label=n[:100], value=n) for n in suggested_dirs[:24]]
+            options.append(discord.SelectOption(label="Répertoire pas dans la liste", value="__manual__"))
             self.add_item(TorrentDirSelect(options))
 
         if self.kind == "series":
@@ -1208,9 +1211,15 @@ class TorrentOptionView(discord.ui.View):
 
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.target_name:
+            await interaction.response.send_message(
+                "⚠️ Choisis un répertoire cible dans la liste ou saisis-le manuellement.",
+                ephemeral=True,
+            )
+            return
+
         prefs: ImportPrefs = {"kind": self.kind}
-        if self.target_name:
-            prefs["target_name"] = self.target_name
+        prefs["target_name"] = self.target_name
         if self.kind == "series":
             prefs["series_mode"] = self.series_mode
             if self.season > 0:
@@ -1221,7 +1230,7 @@ class TorrentOptionView(discord.ui.View):
         summary = [
             f"- Type: {'Série' if self.kind == 'series' else 'Film'}",
             f"- Qualité: {self.quality or 'Toutes'}",
-            f"- Dossier cible: {self.target_name or 'auto'}",
+            f"- Dossier cible: {self.target_name}",
         ]
         if self.kind == "series":
             summary.append(f"- Mode série: {'Episode' if self.series_mode == 'single' else 'Complet'}")
@@ -1250,8 +1259,44 @@ class TorrentDirSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         parent = self.view
         if isinstance(parent, TorrentOptionView):
-            parent.target_name = self.values[0]
+            selected = self.values[0]
+            if selected == "__manual__":
+                await interaction.response.send_modal(TorrentManualDirModal(parent))
+                return
+            parent.target_name = selected
         await interaction.response.defer()
+
+
+class TorrentManualDirModal(discord.ui.Modal, title="Répertoire cible"):
+    target_input = discord.ui.TextInput(
+        label="Nom du répertoire cible",
+        placeholder="Ex: Andor (2022)",
+        max_length=100,
+    )
+
+    def __init__(self, parent_view: TorrentOptionView):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        value = str(self.target_input.value).strip()
+        if not value:
+            await interaction.response.send_message("⚠️ Le nom du répertoire ne peut pas être vide.", ephemeral=True)
+            return
+        self.parent_view.target_name = value
+        await interaction.response.send_message(f"✅ Répertoire cible défini: `{value}`", ephemeral=True)
+
+
+class TorrentManualDirButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✍️ Saisir un répertoire cible", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        parent = self.view
+        if not isinstance(parent, TorrentOptionView):
+            await interaction.response.defer()
+            return
+        await interaction.response.send_modal(TorrentManualDirModal(parent))
 
 
 class TorrentSeriesModeSelect(discord.ui.Select):
