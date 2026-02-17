@@ -1197,11 +1197,9 @@ class TorrentOptionView(discord.ui.View):
             season_opts = [discord.SelectOption(label=f"Saison {i}", value=str(i), default=(i == (self.season or 1))) for i in range(1, SEASON_SELECT_MAX + 1)]
             self.add_item(TorrentSeasonSelect(season_opts))
 
-            episode_opts = [discord.SelectOption(label=f"Episode {i}", value=str(i), default=(i == (self.episode or 1))) for i in range(1, EPISODE_SELECT_MAX + 1)]
-            self.add_item(TorrentEpisodeSelect(episode_opts))
 
         quality_opts = [
-            discord.SelectOption(label="Toutes", value=""),
+            discord.SelectOption(label="Toutes", value="all"),
             discord.SelectOption(label="2160p", value="2160p"),
             discord.SelectOption(label="1080p", value="1080p"),
             discord.SelectOption(label="720p", value="720p"),
@@ -1278,16 +1276,6 @@ class TorrentSeasonSelect(discord.ui.Select):
         await interaction.response.defer()
 
 
-class TorrentEpisodeSelect(discord.ui.Select):
-    def __init__(self, options: List[discord.SelectOption]):
-        super().__init__(placeholder="Episode (si mode single)", options=options, min_values=1, max_values=1)
-
-    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
-        parent = self.view
-        if isinstance(parent, TorrentOptionView):
-            parent.episode = int(self.values[0])
-        await interaction.response.defer()
-
 
 class TorrentQualitySelect(discord.ui.Select):
     def __init__(self, options: List[discord.SelectOption], selected: str):
@@ -1298,7 +1286,7 @@ class TorrentQualitySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         parent = self.view
         if isinstance(parent, TorrentOptionView):
-            parent.quality = self.values[0] or None
+            parent.quality = None if self.values[0] == "all" else self.values[0]
         await interaction.response.defer()
 
 
@@ -1413,10 +1401,10 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="recherchetorrent", description="Recherche un torrent rapidement (mode simplifié).")
+@bot.tree.command(name="recherchetorrent", description="Assistant interactif de recherche torrent.")
 @app_commands.describe(
-    query="Titre ou texte (ex: Friends.S01E01)",
-    quality="Filtre qualité (2160p, 1080p, 720p...)",
+    query="Titre à chercher (ex: Friends ou Friends.S01E01)",
+    quality="Qualité préférée (optionnel)",
     kind="Optionnel: movies ou series",
     track="Afficher le suivi de téléchargement sur Discord",
 )
@@ -1428,44 +1416,40 @@ async def recherchetorrent(
     track: bool = True,
 ):
     logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
-    await interaction.response.defer(ephemeral=True)
-    if not JACKETT_API_KEY:
-        await interaction.followup.send("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
-        return
-
-    default_kind, season, episode = default_mode_from_query(query)
-    chosen_kind = (kind or default_kind).lower().strip()
-    chosen_kind = "movies" if chosen_kind == "movies" else "series" if chosen_kind == "series" else default_kind
-
-    prefs: ImportPrefs = {"kind": chosen_kind}
-    if chosen_kind == "series":
-        prefs["series_mode"] = "single" if episode > 0 else "complete"
-        if season > 0:
-            prefs["season"] = season
-        if episode > 0:
-            prefs["episode"] = episode
-
-    await send_jackett_results(interaction, query, chosen_kind, prefs=prefs, track=track, quality=quality)
-
-
-@bot.tree.command(name="torrent", description="Assistant interactif de recherche torrent.")
-@app_commands.describe(
-    query="Titre à chercher (ex: Friends ou Friends.S01E01)",
-    quality="Qualité préférée (optionnel)",
-    track="Afficher le suivi de téléchargement sur Discord",
-)
-async def torrent(interaction: discord.Interaction, query: str, quality: str | None = None, track: bool = True):
-    logger.info("/torrent called by %s (%s)", interaction.user, interaction.user.id)
     if not JACKETT_API_KEY:
         await interaction.response.send_message("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
 
     default_kind, season, episode = default_mode_from_query(query)
+    if kind in {"movies", "series"}:
+        selected_kind = kind
+    else:
+        selected_kind = default_kind
+
     content = (
-        "Choisis Film / Série puis affine les options (qualité, saison/épisode, dossier cible), "
+        "Choisis Film / Série puis affine les options (qualité, saison, dossier cible), "
         "et confirme pour lancer la recherche.\n"
         f"Détection automatique: {'Série' if default_kind == 'series' else 'Film'}"
     )
+
+    # Si kind est explicitement imposé, on ouvre directement l'étape d'options.
+    if kind in {"movies", "series"}:
+        sugg = suggest_target_directories(query, selected_kind)
+        await interaction.response.send_message(
+            "Choisis les options de recherche:",
+            ephemeral=True,
+            view=TorrentOptionView(
+                query=query,
+                kind=selected_kind,
+                quality=quality,
+                track=track,
+                suggested_dirs=sugg,
+                season=season,
+                episode=episode,
+            ),
+        )
+        return
+
     await interaction.response.send_message(
         content,
         view=TorrentKindView(query, quality, track, default_kind, season, episode),
@@ -1516,7 +1500,7 @@ async def cleartorrents(interaction: discord.Interaction):
 async def info_cmd(interaction: discord.Interaction):
     text = (
         "**Guide rapide**\n"
-        "1) Utilise `/torrent` (assistant interactif) ou `/recherchetorrent` (rapide).\n"
+        "1) Utilise `/recherchetorrent` (assistant interactif).\n"
         "2) Choisis `kind` (film/série), puis `target_name` (dossier Plex final).\n"
         "3) Pour une saison, mets `kind=series`, `series_mode=complete`, `season=2` (ex).\n"
         "4) Sélectionne un résultat : le bot ajoute, suit le download et range automatiquement sans `/import`.\n\n"
