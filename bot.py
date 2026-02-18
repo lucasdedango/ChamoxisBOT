@@ -74,7 +74,7 @@ logger.info("Logger initialized (level=%s, file=%s)", LOG_LEVEL, LOG_FILE)
 GUILD_ID = 369545955252502528
 
 # Extensions vidéo
-VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".ts"}
+VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".wmv", ".ts", ".webm", ".mpeg", ".mpg", ".m2ts", ".mts", ".flv", ".vob", ".3gp"}
 
 # Patterns séries
 SERIES_PATTERNS = [
