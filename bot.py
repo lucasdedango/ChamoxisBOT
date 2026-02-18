@@ -916,6 +916,34 @@ def sanitize_series_title(name: str) -> str:
     return normalize_spaces(base).strip(" -._")
 
 
+
+
+def format_embed_lines(lines: List[str], *, max_lines: int = 12, max_len: int = 1024) -> str:
+    selected = lines[:max_lines]
+    if not selected:
+        return "-"
+
+    out: List[str] = []
+    total = len(lines)
+    for line in selected:
+        candidate = "\n".join(out + [line])
+        if len(candidate) > max_len:
+            break
+        out.append(line)
+
+    if not out:
+        clipped = selected[0]
+        suffix = "…" if len(clipped) > max_len else ""
+        return f"{clipped[:max_len-1]}{suffix}"
+
+    omitted = total - len(out)
+    if omitted > 0:
+        suffix = f"\n… (+{omitted} autre(s))"
+        if len("\n".join(out) + suffix) <= max_len:
+            return "\n".join(out) + suffix
+
+    return "\n".join(out)
+
 def suggest_target_directories(query: str, kind: str, *, max_items: int = 10) -> List[str]:
     needle = sanitize_series_title(query) if kind == "series" else remove_junk_tokens(strip_brackets(query))
     norm_needle = _normalize_for_match(needle)
@@ -1686,7 +1714,7 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     )
     embed.add_field(name="Fichiers déplacés", value=str(moved_files), inline=True)
     if move_logs:
-        embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
+        embed.add_field(name="📂 Copie des fichiers", value=format_embed_lines(move_logs, max_lines=12, max_len=1024), inline=False)
     if refresh_lines:
         embed.add_field(name="🔄 Plex", value="\n".join(refresh_lines), inline=False)
 
