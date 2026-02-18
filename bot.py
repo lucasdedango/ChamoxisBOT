@@ -6,7 +6,7 @@ import shutil
 import base64
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, TypedDict
+from typing import Optional, Tuple, List, Dict, Set, TypedDict
 import xml.etree.ElementTree as ET
 import urllib.parse
 
@@ -54,6 +54,9 @@ JACKETT_COOKIE_VALUE = os.getenv("JACKETT_COOKIE_VALUE", "")
 JACKETT_INDEXER = "ygege"
 JACKETT_COOLDOWN_SECONDS = 30
 JACKETT_FORCE_UPLOAD = os.getenv("JACKETT_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
+
+REPAIR_PROCESS_NAMES = [p.strip() for p in os.getenv("REPAIR_PROCESS_NAMES", "ygege.exe,jackett.exe").split(",") if p.strip()]
+REPAIR_START_COMMANDS = [c.strip() for c in os.getenv("REPAIR_START_COMMANDS", "").split(";;") if c.strip()]
 
 LOG_FILE = os.getenv("BOT_LOG_FILE", "bot.log")
 LOG_LEVEL = os.getenv("BOT_LOG_LEVEL", "INFO").upper()
@@ -905,6 +908,58 @@ def is_av1_title(title: str) -> bool:
     return "av1" in title.lower()
 
 
+async def run_shell_command(cmd: str) -> Tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    return int(proc.returncode or 0), out, err
+
+
+async def restart_external_services() -> Tuple[List[str], List[str]]:
+    notes: List[str] = []
+    errors: List[str] = []
+
+    process_names = REPAIR_PROCESS_NAMES or ["ygege.exe", "jackett.exe"]
+    for proc_name in process_names:
+        if os.name == "nt":
+            cmd = f'taskkill /IM "{proc_name}" /F /T'
+        else:
+            cmd = f'pkill -f "{proc_name}"'
+
+        rc, out, err = await run_shell_command(cmd)
+        lowered = f"{out}\n{err}".lower()
+        if rc == 0:
+            notes.append(f"🛑 Process arrêté: `{proc_name}`")
+        elif "not found" in lowered or "aucune instance" in lowered or "no process" in lowered:
+            notes.append(f"ℹ️ Process non trouvé: `{proc_name}`")
+        else:
+            errors.append(f"{proc_name}: {err or out or f'code {rc}'}")
+
+    await asyncio.sleep(2)
+
+    start_cmds = list(REPAIR_START_COMMANDS)
+    if os.name == "nt" and any("jackett" in p.lower() for p in process_names) and not any("jackett" in c.lower() for c in start_cmds):
+        start_cmds.append("sc start Jackett")
+
+    if not start_cmds:
+        notes.append("⚠️ Aucun REPAIR_START_COMMANDS configuré. Configure des commandes de relance si nécessaire.")
+        return notes, errors
+
+    for cmd in start_cmds:
+        rc, out, err = await run_shell_command(cmd)
+        if rc == 0:
+            notes.append(f"✅ Relance OK: `{cmd}`")
+        else:
+            errors.append(f"{cmd}: {err or out or f'code {rc}'}")
+
+    return notes, errors
+
+
 def sanitize_series_title(name: str) -> str:
     base = strip_brackets(name)
     for pat in SERIES_PATTERNS:
@@ -1617,6 +1672,26 @@ async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "
     except Exception as e:
         logger.exception("/addmagnet failed")
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
+
+
+@bot.tree.command(name="repair", description="Redémarre ygege et Jackett (process + relance).")
+async def repair(interaction: discord.Interaction):
+    logger.info("/repair called by %s (%s)", interaction.user, interaction.user.id)
+    await interaction.response.defer(ephemeral=True)
+    try:
+        notes, errors = await restart_external_services()
+    except Exception as e:
+        logger.exception("/repair failed")
+        await interaction.followup.send(f"❌ Réparation échouée : {e}", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🧰 Réparation des services", description="Restart ygege/jackett terminé.")
+    if notes:
+        embed.add_field(name="Actions", value=format_embed_lines(notes, max_lines=20, max_len=1024), inline=False)
+    if errors:
+        embed.add_field(name="Erreurs", value=format_embed_lines([f"❌ {e}" for e in errors], max_lines=20, max_len=1024), inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
