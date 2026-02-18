@@ -297,6 +297,9 @@ class QbitClient:
         data = {"hash": info_hash, "oldPath": old.as_posix(), "newPath": new.as_posix()}
         await self._post_text("/api/v2/torrents/renameFile", data=data)
 
+    async def list_files(self, info_hash: str) -> List[dict]:
+        return await self._get_json("/api/v2/torrents/files", params={"hash": info_hash})
+
 qbit = QbitClient(QBIT_URL, QBIT_USER, QBIT_PASS)
 
 # ----------------- PLEX REFRESH -----------------
@@ -436,6 +439,18 @@ def pick_content_path(t: dict) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+def resolve_qbit_old_path(file_path: Path, content_root: Path, known_qbit_paths: Set[str]) -> Path:
+    rel = file_path.relative_to(content_root) if content_root.is_dir() else Path(file_path.name)
+    candidates = [rel]
+    if content_root.is_dir():
+        candidates.append(Path(content_root.name) / rel)
+
+    for candidate in candidates:
+        if candidate.as_posix() in known_qbit_paths:
+            return candidate
+    return rel
 
 def guess_show_title_from_torrent(torrent_name: str) -> str:
     base = strip_brackets(torrent_name)
@@ -790,6 +805,8 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     ensure_dir(target_root)
     await qbit.set_location(info_hash, target_root)
     logger.info("Series target location set via qBittorrent: %s", target_root)
+    qbit_files = await qbit.list_files(info_hash)
+    known_qbit_paths = {str(item.get("name", "")) for item in qbit_files if item.get("name")}
 
     moved = 0
     season_counts: Dict[int, int] = {}
@@ -807,7 +824,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
         new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
-        rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        rel_old = resolve_qbit_old_path(f, content_root, known_qbit_paths)
         await qbit.rename_file(info_hash, rel_old, new_rel)
         moved += 1
         if move_logs is not None:
@@ -832,7 +849,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
         new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
-        rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        rel_old = resolve_qbit_old_path(f, content_root, known_qbit_paths)
         await qbit.rename_file(info_hash, rel_old, new_rel)
         moved += 1
         ep_counter += 1
@@ -868,9 +885,11 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     ensure_dir(movie_dir)
     await qbit.set_location(info_hash, movie_dir)
     logger.info("Movie target location set via qBittorrent: %s", movie_dir)
+    qbit_files = await qbit.list_files(info_hash)
+    known_qbit_paths = {str(item.get("name", "")) for item in qbit_files if item.get("name")}
 
     new_filename = f"{display}{video.suffix.lower()}"
-    rel_old = video.relative_to(content_root) if content_root.is_dir() else Path(video.name)
+    rel_old = resolve_qbit_old_path(video, content_root, known_qbit_paths)
     new_rel = unique_rel_path(movie_dir, Path(new_filename))
     await qbit.rename_file(info_hash, rel_old, new_rel)
     new_path = movie_dir / new_rel
