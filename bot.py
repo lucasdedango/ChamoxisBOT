@@ -1720,6 +1720,18 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
+    if interaction.channel:
+        public_embed = discord.Embed(
+            title="🆕 Ajout sur Plex",
+            description=msg,
+        )
+        public_embed.add_field(name="Demandé par", value=interaction.user.mention, inline=True)
+        public_embed.add_field(name="Fichiers déplacés", value=str(moved_files), inline=True)
+        try:
+            await interaction.channel.send(embed=public_embed)
+        except Exception as e:
+            logger.warning("Unable to send public Plex announcement for hash=%s: %s", info_hash, e)
+
 # ----------------- MAIN -----------------
 async def main():
     if not DISCORD_TOKEN:
