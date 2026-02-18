@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ----------------- CONFIG -----------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
