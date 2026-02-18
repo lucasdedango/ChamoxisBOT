@@ -909,6 +909,7 @@ def is_av1_title(title: str) -> bool:
 
 
 async def run_shell_command(cmd: str) -> Tuple[int, str, str]:
+    logger.info("[repair] exec: %s", cmd)
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -917,7 +918,13 @@ async def run_shell_command(cmd: str) -> Tuple[int, str, str]:
     stdout, stderr = await proc.communicate()
     out = stdout.decode("utf-8", errors="replace").strip()
     err = stderr.decode("utf-8", errors="replace").strip()
-    return int(proc.returncode or 0), out, err
+    rc = int(proc.returncode or 0)
+    logger.info("[repair] result: rc=%s cmd=%s", rc, cmd)
+    if out:
+        logger.info("[repair] stdout (%s): %s", cmd, out[:500])
+    if err:
+        logger.warning("[repair] stderr (%s): %s", cmd, err[:500])
+    return rc, out, err
 
 
 async def restart_external_services() -> Tuple[List[str], List[str]]:
@@ -925,6 +932,7 @@ async def restart_external_services() -> Tuple[List[str], List[str]]:
     errors: List[str] = []
 
     process_names = REPAIR_PROCESS_NAMES or ["ygege.exe", "jackett.exe"]
+    logger.info("[repair] process targets: %s", process_names)
     for proc_name in process_names:
         if os.name == "nt":
             cmd = f'taskkill /IM "{proc_name}" /F /T'
@@ -943,12 +951,16 @@ async def restart_external_services() -> Tuple[List[str], List[str]]:
     await asyncio.sleep(2)
 
     start_cmds = list(REPAIR_START_COMMANDS)
+    logger.info("[repair] start commands before fallback: %s", start_cmds)
     if os.name == "nt" and any("jackett" in p.lower() for p in process_names) and not any("jackett" in c.lower() for c in start_cmds):
         start_cmds.append("sc start Jackett")
+        logger.info("[repair] added fallback start command: sc start Jackett")
 
     if not start_cmds:
         notes.append("⚠️ Aucun REPAIR_START_COMMANDS configuré. Configure des commandes de relance si nécessaire.")
         return notes, errors
+
+    logger.info("[repair] start commands final: %s", start_cmds)
 
     for cmd in start_cmds:
         rc, out, err = await run_shell_command(cmd)
@@ -1680,6 +1692,7 @@ async def repair(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         notes, errors = await restart_external_services()
+        logger.info("[repair] completed with notes=%s errors=%s", len(notes), len(errors))
     except Exception as e:
         logger.exception("/repair failed")
         await interaction.followup.send(f"❌ Réparation échouée : {e}", ephemeral=True)
