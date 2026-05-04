@@ -41,7 +41,7 @@ JACKETT_URL = os.getenv("JACKETT_URL", "http://127.0.0.1:9117").rstrip("/")
 JACKETT_API_KEY = os.getenv("JACKETT_API_KEY", "")
 JACKETT_RSS_URL = os.getenv(
     "JACKETT_RSS_URL",
-    f"{JACKETT_URL}/api/v2.0/indexers/ygege/results/torznab/api?apikey={JACKETT_API_KEY}&limit=20",
+    f"{JACKETT_URL}/api/v2.0/indexers/c411/results/torznab/api?apikey={JACKETT_API_KEY}&limit=20",
 )
 JACKETT_USER_AGENT = os.getenv(
     "JACKETT_USER_AGENT",
@@ -51,7 +51,7 @@ JACKETT_USER = os.getenv("JACKETT_USER", "")
 JACKETT_PASSWORD = os.getenv("JACKETT_PASSWORD", "")
 JACKETT_COOKIE_NAME = os.getenv("JACKETT_COOKIE_NAME", "")
 JACKETT_COOKIE_VALUE = os.getenv("JACKETT_COOKIE_VALUE", "")
-JACKETT_INDEXER = "ygege"
+JACKETT_INDEXER = os.getenv("JACKETT_INDEXER", "c411")
 JACKETT_COOLDOWN_SECONDS = 30
 JACKETT_FORCE_UPLOAD = os.getenv("JACKETT_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
 
