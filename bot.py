@@ -36,24 +36,20 @@ PLEX_ROOT = Path(r"D:\plexmediaserver")
 PLEX_MOVIES = PLEX_ROOT / "movies"
 PLEX_SERIES = PLEX_ROOT / "series"
 
-# Jackett (RSS)
-JACKETT_URL = os.getenv("JACKETT_URL", "http://127.0.0.1:9117").rstrip("/")
-JACKETT_API_KEY = os.getenv("JACKETT_API_KEY", "")
-JACKETT_RSS_URL = os.getenv(
-    "JACKETT_RSS_URL",
-    f"{JACKETT_URL}/api/v2.0/indexers/ygege/results/torznab/api?apikey={JACKETT_API_KEY}&limit=20",
+# Backend Torznab (Prowlarr uniquement)
+PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696").rstrip("/")
+PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
+PROWLARR_INDEXER_ID = os.getenv("PROWLARR_INDEXER_ID", "1")
+TORZNAB_RSS_URL = os.getenv(
+    "TORZNAB_RSS_URL",
+    f"{PROWLARR_URL}/api/v1/indexer/{PROWLARR_INDEXER_ID}/newznab/?apikey={PROWLARR_API_KEY}&t=search&limit=20",
 )
-JACKETT_USER_AGENT = os.getenv(
-    "JACKETT_USER_AGENT",
+TORZNAB_USER_AGENT = os.getenv(
+    "TORZNAB_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
 )
-JACKETT_USER = os.getenv("JACKETT_USER", "")
-JACKETT_PASSWORD = os.getenv("JACKETT_PASSWORD", "")
-JACKETT_COOKIE_NAME = os.getenv("JACKETT_COOKIE_NAME", "")
-JACKETT_COOKIE_VALUE = os.getenv("JACKETT_COOKIE_VALUE", "")
-JACKETT_INDEXER = "ygege"
-JACKETT_COOLDOWN_SECONDS = 30
-JACKETT_FORCE_UPLOAD = os.getenv("JACKETT_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
+TORZNAB_COOLDOWN_SECONDS = 30
+TORZNAB_FORCE_UPLOAD = os.getenv("TORZNAB_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
 
 LOG_FILE = os.getenv("BOT_LOG_FILE", "bot.log")
 LOG_LEVEL = os.getenv("BOT_LOG_LEVEL", "INFO").upper()
@@ -120,6 +116,7 @@ imported_torrents: set[str] = set()
 MAX_SEARCH_RESULTS = 100
 SEASON_SELECT_MAX = 20
 EPISODE_SELECT_MAX = 30
+DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
 
@@ -486,7 +483,7 @@ def _normalize_for_match(text: str) -> str:
 
 def find_recent_torrent_candidate(items: List[dict], *, title: str, category: str) -> Optional[dict]:
     """
-    Trouve le torrent le plus probable juste après un ajout Jackett.
+    Trouve le torrent le plus probable juste après un ajout Torznab.
     Stratégies:
     1) nom exact
     2) nom normalisé (équivalent / inclusion)
@@ -603,38 +600,33 @@ def quality_matches(title: str, quality: str | None) -> bool:
     return q in t
 
 
-def build_jackett_search_url(query: str, limit: int = 20) -> str:
+def build_torznab_search_url(query: str, limit: int = 20) -> str:
     q = urllib.parse.quote_plus(query)
-    idx_path = urllib.parse.quote(JACKETT_INDEXER, safe="")
-    base = f"{JACKETT_URL}/api/v2.0/indexers/{idx_path}/results/torznab/api"
-    return f"{base}?apikey={JACKETT_API_KEY}&t=search&q={q}&limit={limit}"
+    idx = urllib.parse.quote(str(PROWLARR_INDEXER_ID), safe="")
+    base = f"{PROWLARR_URL}/api/v1/indexer/{idx}/newznab/"
+    return f"{base}?apikey={PROWLARR_API_KEY}&t=search&q={q}&limit={limit}"
 
 
-def _jackett_auth_headers() -> dict[str, str]:
+def _torznab_headers() -> dict[str, str]:
     headers: dict[str, str] = {}
-    if JACKETT_USER and JACKETT_PASSWORD:
-        token = base64.b64encode(f"{JACKETT_USER}:{JACKETT_PASSWORD}".encode()).decode()
-        headers["Authorization"] = f"Basic {token}"
-    if JACKETT_USER_AGENT:
-        headers["User-Agent"] = JACKETT_USER_AGENT
+    if TORZNAB_USER_AGENT:
+        headers["User-Agent"] = TORZNAB_USER_AGENT
     return headers
 
 
-async def jackett_request(url: str, *, expect_json: bool = False) -> str | list | dict:
+async def torznab_request(url: str, *, expect_json: bool = False) -> str | list | dict:
     """
-    Fait une requête GET Jackett, tente d'abord sans auth, puis avec Basic Auth / cookie si configuré,
+    Fait une requête GET Torznab, tente d'abord sans auth, puis avec Basic Auth / cookie si configuré,
     et gère explicitement les 302/401/403.
     """
     timeout = aiohttp.ClientTimeout(total=25)
-    base_headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+    base_headers = {"User-Agent": TORZNAB_USER_AGENT} if TORZNAB_USER_AGENT else {}
 
     async def _attempt(use_auth: bool):
         headers = dict(base_headers)
         jar = aiohttp.CookieJar(unsafe=True)
         if use_auth:
-            headers.update(_jackett_auth_headers())
-            if JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE:
-                jar.update_cookies({JACKETT_COOKIE_NAME: JACKETT_COOKIE_VALUE})
+            headers.update(_torznab_headers())
         async with aiohttp.ClientSession(timeout=timeout, headers=headers, cookie_jar=jar) as session:
             async with session.get(url, allow_redirects=False) as resp:
                 if resp.status == 200:
@@ -650,45 +642,36 @@ async def jackett_request(url: str, *, expect_json: bool = False) -> str | list 
                 raise RuntimeError(f"HTTP {resp.status}{extra} / {text[:120]}")
 
     # Premier essai sans auth explicite
-    logger.info("Jackett GET %s (auth=none)", url)
+    logger.info("Torznab GET %s (auth=none)", url)
     result = await _attempt(False)
     if result is not None:
         return result
 
     # Second essai avec Basic Auth / cookie si dispo
-    if not (JACKETT_USER or (JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE)):
-        logger.warning("Jackett auth required but no credentials/cookies configured.")
-        raise RuntimeError("Accès Jackett refusé (auth requise ?)")
-    logger.info("Jackett GET %s (auth=basic/cookie)", url)
-    result = await _attempt(True)
-    if result is not None:
-        return result
-    logger.error("Jackett access refused for %s", url)
-    raise RuntimeError("Accès Jackett refusé malgré authentification.")
+    logger.error("Torznab access refused for %s", url)
+    raise RuntimeError("Accès Torznab refusé.")
 
 
-async def fetch_rss(url: str, *, user_agent: str = JACKETT_USER_AGENT) -> str:
+async def fetch_rss(url: str, *, user_agent: str = TORZNAB_USER_AGENT) -> str:
     """
-    Récupère un flux RSS générique (utilisé pour Jackett).
+    Récupère un flux RSS générique (utilisé pour Torznab).
     """
-    # user_agent param conservé pour compat mais on passe par jackett_request pour gérer l'auth/cookies.
-    return str(await jackett_request(url, expect_json=False))
+    # user_agent param conservé pour compat mais on passe par torznab_request pour gérer l'auth/cookies.
+    return str(await torznab_request(url, expect_json=False))
 
 
 async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> bytes:
     """
-    Télécharge un .torrent depuis Jackett en gérant auth/cookie + cooldown/retry.
+    Télécharge un .torrent depuis Torznab en gérant auth/cookie + cooldown/retry.
     """
     timeout = aiohttp.ClientTimeout(total=75)
-    base_headers = {"User-Agent": JACKETT_USER_AGENT} if JACKETT_USER_AGENT else {}
+    base_headers = {"User-Agent": TORZNAB_USER_AGENT} if TORZNAB_USER_AGENT else {}
 
     async def _attempt(use_auth: bool) -> tuple[int, bytes | None, str]:
         headers = dict(base_headers)
         jar = aiohttp.CookieJar(unsafe=True)
         if use_auth:
-            headers.update(_jackett_auth_headers())
-            if JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE:
-                jar.update_cookies({JACKETT_COOKIE_NAME: JACKETT_COOKIE_VALUE})
+            headers.update(_torznab_headers())
         async with aiohttp.ClientSession(timeout=timeout, headers=headers, cookie_jar=jar) as session:
             async with session.get(url, allow_redirects=False) as resp:
                 status = resp.status
@@ -701,20 +684,19 @@ async def download_torrent_with_retry(url: str, *, max_attempts: int = 2) -> byt
 
     last_error = ""
     for attempt in range(1, max_attempts + 1):
-        logger.info("Jackett torrent download attempt %s/%s (auth=none): %s", attempt, max_attempts, url)
+        logger.info("Torznab torrent download attempt %s/%s (auth=none): %s", attempt, max_attempts, url)
         status, payload, detail = await _attempt(False)
         if payload is not None:
             return payload
-        logger.warning("Jackett torrent download attempt failed (status=%s, detail=%s)", status, detail)
+        logger.warning("Torznab torrent download attempt failed (status=%s, detail=%s)", status, detail)
         if status in (301, 302, 303, 307, 308, 401, 403, 429, 503):
-            if JACKETT_USER or (JACKETT_COOKIE_NAME and JACKETT_COOKIE_VALUE):
-                logger.info("Jackett torrent download retry (auth=basic/cookie): %s", url)
-                status, payload, detail = await _attempt(True)
-                if payload is not None:
-                    return payload
+            logger.info("Torznab torrent download retry: %s", url)
+            status, payload, detail = await _attempt(True)
+            if payload is not None:
+                return payload
         if attempt < max_attempts:
-            logger.warning("Jackett torrent download failed (HTTP %s). Waiting %ss before retry.", status, JACKETT_COOLDOWN_SECONDS)
-            await asyncio.sleep(JACKETT_COOLDOWN_SECONDS)
+            logger.warning("Torznab torrent download failed (HTTP %s). Waiting %ss before retry.", status, TORZNAB_COOLDOWN_SECONDS)
+            await asyncio.sleep(TORZNAB_COOLDOWN_SECONDS)
         last_error = f"HTTP {status} ({detail})"
     raise RuntimeError(f"Téléchargement .torrent échoué: {last_error}")
 
@@ -957,9 +939,11 @@ def default_mode_from_query(query: str) -> tuple[str, int, int]:
 class RssSelect(discord.ui.Select):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
-        for idx, item in enumerate(items):
+        for idx, item in enumerate(items[:DISCORD_SELECT_MAX_OPTIONS]):
             label = shorten(item["title"], 90)
             options.append(discord.SelectOption(label=label, value=str(idx)))
+        if not options:
+            raise ValueError("Aucun résultat sélectionnable pour le menu Discord.")
         super().__init__(placeholder="Choisis un torrent à ajouter", options=options, min_values=1, max_values=1)
         self.items = items
         self.category = category
@@ -976,7 +960,7 @@ class RssSelect(discord.ui.Select):
             await interaction.followup.send("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
             return
         added_via = "URL"
-        if not JACKETT_FORCE_UPLOAD:
+        if not TORZNAB_FORCE_UPLOAD:
             try:
                 await qbit.add_magnet(url, category=self.category)
                 added_via = "URL"
@@ -1038,7 +1022,7 @@ class RssView(discord.ui.View):
             self.add_item(RssSelect(items, category, prefs=prefs, track=track))
 
 
-async def send_jackett_results(
+async def send_torznab_results(
     interaction: discord.Interaction,
     query: str,
     kind: str,
@@ -1046,12 +1030,12 @@ async def send_jackett_results(
     track: bool = True,
     quality: str | None = None,
 ):
-    search_url = build_jackett_search_url(query, limit=MAX_SEARCH_RESULTS)
+    search_url = build_torznab_search_url(query, limit=MAX_SEARCH_RESULTS)
     try:
         xml_text = await fetch_rss(search_url)
     except Exception as e:
-        await interaction.followup.send(f"❌ Impossible d'interroger Jackett: {e}", ephemeral=True)
-        logger.error("Jackett search failed for query=%s: %s", query, e)
+        await interaction.followup.send(f"❌ Impossible d'interroger Torznab: {e}", ephemeral=True)
+        logger.error("Torznab search failed for query=%s: %s", query, e)
         return
 
     try:
@@ -1075,7 +1059,7 @@ async def send_jackett_results(
         lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title=f"Jackett ({JACKETT_INDEXER}): résultats pour \"{query}\"",
+        title=f"Prowlarr (indexer {PROWLARR_INDEXER_ID}): résultats pour \"{query}\"",
         description="\n".join(lines[:25]),
     )
     footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
@@ -1084,7 +1068,13 @@ async def send_jackett_results(
     embed.set_footer(text=footer)
 
     category = "movies" if kind.lower().strip() == "movies" else "series"
-    view = RssView(items, category, prefs=prefs, track=track)
+    selectable_items = items[:DISCORD_SELECT_MAX_OPTIONS]
+    try:
+        view = RssView(selectable_items, category, prefs=prefs, track=track)
+    except ValueError as e:
+        await interaction.followup.send(f"❌ {e}", ephemeral=True)
+        logger.error("Torznab view build failed for query=%s: %s", query, e)
+        return
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -1287,7 +1277,7 @@ class TorrentOptionView(discord.ui.View):
             "Configuration validée. Lancement de la recherche...\n" + "\n".join(summary),
             ephemeral=True,
         )
-        await send_jackett_results(
+        await send_torznab_results(
             interaction,
             self.query,
             self.kind,
@@ -1464,18 +1454,18 @@ async def status(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 
-@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Jackett et ajoute un torrent.")
+@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Torznab (Prowlarr/Torznab) et ajoute un torrent.")
 @app_commands.describe(
-    url="URL du flux RSS Jackett (par défaut JACKETT_RSS_URL)",
+    url="URL du flux RSS Torznab (par défaut TORZNAB_RSS_URL)",
     limit="Nombre d'items à afficher (défaut 5)",
     kind="movies ou series pour choisir la catégorie qBittorrent",
 )
 async def rssfeed(interaction: discord.Interaction, url: str | None = None, limit: int = 5, kind: str = "movies"):
     logger.info("/rssfeed called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
-    feed_url = url or JACKETT_RSS_URL
+    feed_url = url or TORZNAB_RSS_URL
     if not feed_url:
-        await interaction.followup.send("❌ Aucun flux RSS Jackett configuré (renseigne JACKETT_RSS_URL).", ephemeral=True)
+        await interaction.followup.send("❌ Aucun flux RSS Torznab configuré (renseigne TORZNAB_RSS_URL).", ephemeral=True)
         return
     logger.info("RSS feed requested: url=%s limit=%s kind=%s", feed_url, limit, kind)
     try:
@@ -1503,7 +1493,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
         lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title="Flux RSS (Jackett)",
+        title="Flux RSS (Prowlarr)",
         description="\n".join(lines),
     )
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
@@ -1522,8 +1512,8 @@ async def recherchetorrent(
     query: str,
 ):
     logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
-    if not JACKETT_API_KEY:
-        await interaction.response.send_message("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
+    if not PROWLARR_API_KEY:
+        await interaction.response.send_message("❌ PROWLARR_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
 
     default_kind, season, episode = default_mode_from_query(query)
@@ -1587,7 +1577,7 @@ async def info_cmd(interaction: discord.Interaction):
 
     text = (
         "**Bienvenue sur ChamoxisBOT 👋**\n\n"
-        "Ce bot sert à chercher des torrents via Jackett, les ajouter dans qBittorrent, "
+        "Ce bot sert à chercher des torrents via Torznab (Prowlarr/Torznab), les ajouter dans qBittorrent, "
         "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
         "**Étape 1 — Commande principale**\n"
         "- Lance `/recherchetorrent query:<ton titre>` (ex: `andor s02`, `dune part two`).\n"
@@ -1601,7 +1591,7 @@ async def info_cmd(interaction: discord.Interaction):
         "3) À 100%, range les fichiers dans les bons dossiers Plex (films/séries).\n\n"
         "**Autres commandes utiles**\n"
         "- `/status` : voir les derniers torrents et leur état.\n"
-        "- `/rssfeed` : lire un flux RSS Jackett et ajouter un item rapidement.\n"
+        "- `/rssfeed` : lire un flux RSS Torznab et ajouter un item rapidement.\n"
         "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
         "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
         "**Exemples simples**\n"
