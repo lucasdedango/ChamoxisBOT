@@ -36,12 +36,18 @@ PLEX_ROOT = Path(r"D:\plexmediaserver")
 PLEX_MOVIES = PLEX_ROOT / "movies"
 PLEX_SERIES = PLEX_ROOT / "series"
 
-# Jackett (RSS)
+# Backend Torznab (Prowlarr recommandé; Jackett compatible)
+TORZNAB_BACKEND = os.getenv("TORZNAB_BACKEND", "prowlarr").strip().lower()
+
 JACKETT_URL = os.getenv("JACKETT_URL", "http://127.0.0.1:9117").rstrip("/")
 JACKETT_API_KEY = os.getenv("JACKETT_API_KEY", "")
+PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696").rstrip("/")
+PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
+PROWLARR_INDEXER_ID = os.getenv("PROWLARR_INDEXER_ID", "1")
+
 JACKETT_RSS_URL = os.getenv(
     "JACKETT_RSS_URL",
-    f"{JACKETT_URL}/api/v2.0/indexers/c411/results/torznab/api?apikey={JACKETT_API_KEY}&limit=20",
+    f"{PROWLARR_URL}/api/v1/indexer/{PROWLARR_INDEXER_ID}/newznab/?apikey={PROWLARR_API_KEY}&t=search&limit=20",
 )
 JACKETT_USER_AGENT = os.getenv(
     "JACKETT_USER_AGENT",
@@ -605,6 +611,10 @@ def quality_matches(title: str, quality: str | None) -> bool:
 
 def build_jackett_search_url(query: str, limit: int = 20) -> str:
     q = urllib.parse.quote_plus(query)
+    if TORZNAB_BACKEND == "prowlarr":
+        idx = urllib.parse.quote(str(PROWLARR_INDEXER_ID), safe="")
+        base = f"{PROWLARR_URL}/api/v1/indexer/{idx}/newznab/"
+        return f"{base}?apikey={PROWLARR_API_KEY}&t=search&q={q}&limit={limit}"
     idx_path = urllib.parse.quote(JACKETT_INDEXER, safe="")
     base = f"{JACKETT_URL}/api/v2.0/indexers/{idx_path}/results/torznab/api"
     return f"{base}?apikey={JACKETT_API_KEY}&t=search&q={q}&limit={limit}"
@@ -1075,7 +1085,7 @@ async def send_jackett_results(
         lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title=f"Jackett ({JACKETT_INDEXER}): résultats pour \"{query}\"",
+        title=f"{TORZNAB_BACKEND.title()} ({JACKETT_INDEXER if TORZNAB_BACKEND!="prowlarr" else PROWLARR_INDEXER_ID}): résultats pour \"{query}\"",
         description="\n".join(lines[:25]),
     )
     footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
@@ -1464,9 +1474,9 @@ async def status(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
 
 
-@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Jackett et ajoute un torrent.")
+@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Torznab (Prowlarr/Jackett) et ajoute un torrent.")
 @app_commands.describe(
-    url="URL du flux RSS Jackett (par défaut JACKETT_RSS_URL)",
+    url="URL du flux RSS Torznab (par défaut JACKETT_RSS_URL)",
     limit="Nombre d'items à afficher (défaut 5)",
     kind="movies ou series pour choisir la catégorie qBittorrent",
 )
@@ -1475,7 +1485,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
     await interaction.response.defer(ephemeral=True)
     feed_url = url or JACKETT_RSS_URL
     if not feed_url:
-        await interaction.followup.send("❌ Aucun flux RSS Jackett configuré (renseigne JACKETT_RSS_URL).", ephemeral=True)
+        await interaction.followup.send("❌ Aucun flux RSS Torznab configuré (renseigne JACKETT_RSS_URL).", ephemeral=True)
         return
     logger.info("RSS feed requested: url=%s limit=%s kind=%s", feed_url, limit, kind)
     try:
@@ -1503,7 +1513,7 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
         lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
     embed = discord.Embed(
-        title="Flux RSS (Jackett)",
+        title=f"Flux RSS ({TORZNAB_BACKEND.title()})",
         description="\n".join(lines),
     )
     embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
@@ -1522,7 +1532,10 @@ async def recherchetorrent(
     query: str,
 ):
     logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
-    if not JACKETT_API_KEY:
+    if TORZNAB_BACKEND == "prowlarr" and not PROWLARR_API_KEY:
+        await interaction.response.send_message("❌ PROWLARR_API_KEY manquant dans l'environnement.", ephemeral=True)
+        return
+    if TORZNAB_BACKEND != "prowlarr" and not JACKETT_API_KEY:
         await interaction.response.send_message("❌ JACKETT_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
 
@@ -1587,7 +1600,7 @@ async def info_cmd(interaction: discord.Interaction):
 
     text = (
         "**Bienvenue sur ChamoxisBOT 👋**\n\n"
-        "Ce bot sert à chercher des torrents via Jackett, les ajouter dans qBittorrent, "
+        "Ce bot sert à chercher des torrents via Torznab (Prowlarr/Jackett), les ajouter dans qBittorrent, "
         "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
         "**Étape 1 — Commande principale**\n"
         "- Lance `/recherchetorrent query:<ton titre>` (ex: `andor s02`, `dune part two`).\n"
@@ -1601,7 +1614,7 @@ async def info_cmd(interaction: discord.Interaction):
         "3) À 100%, range les fichiers dans les bons dossiers Plex (films/séries).\n\n"
         "**Autres commandes utiles**\n"
         "- `/status` : voir les derniers torrents et leur état.\n"
-        "- `/rssfeed` : lire un flux RSS Jackett et ajouter un item rapidement.\n"
+        "- `/rssfeed` : lire un flux RSS Torznab et ajouter un item rapidement.\n"
         "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
         "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
         "**Exemples simples**\n"

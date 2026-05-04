@@ -1,11 +1,11 @@
 # ChamoxisBOT
 
-Bot Discord pour rechercher des torrents via **Jackett (indexer C411)**, ajouter les téléchargements dans qBittorrent, puis importer automatiquement les médias vers une arborescence Plex (films/séries).
+Bot Discord pour rechercher des torrents via **Torznab (Prowlarr recommandé)**, ajouter les téléchargements dans qBittorrent, puis importer automatiquement les médias vers une arborescence Plex (films/séries).
 
 ## Fonctionnalités
 
 - Recherche de torrents via flux Torznab Jackett.
-- Compatibilité **C411** par défaut (`JACKETT_INDEXER=c411`).
+- Compatibilité Torznab via **Prowlarr** (par défaut) ou **Jackett** (fallback).
 - Ajout de téléchargement via magnet ou upload de fichier `.torrent`.
 - Suivi des torrents ajoutés par utilisateur Discord.
 - Import automatique des médias terminés vers dossiers Films/Séries.
@@ -18,7 +18,7 @@ Bot Discord pour rechercher des torrents via **Jackett (indexer C411)**, ajouter
 - Python 3.10+
 - Un bot Discord (token)
 - qBittorrent Web UI activée
-- Jackett configuré avec un indexer **C411** opérationnel
+- Prowlarr configuré avec un indexer C411 (ou Jackett si tu préfères)
 - (Optionnel) Plex Media Server
 
 ## Installation
@@ -51,7 +51,7 @@ Renseigner les variables dans `.env`.
 - `JACKETT_URL`
 - `JACKETT_API_KEY`
 
-### Variables Jackett / C411
+### Variables Torznab (Prowlarr recommandé)
 
 - `JACKETT_INDEXER` : nom technique de l’indexer (défaut: `c411`).
 - `JACKETT_RSS_URL` : optionnel, permet d’écraser l’URL générée automatiquement.
@@ -143,3 +143,13 @@ Le bot classe les contenus via:
 - `.env.example` : exemple de configuration.
 - `known_users.json` : base locale des utilisateurs connus (générée automatiquement).
 
+
+
+### Choix recommandé (remplace Jackett)
+
+Oui: tu peux utiliser **un seul outil à la place de Jackett** -> **Prowlarr**.
+
+- `TORZNAB_BACKEND=prowlarr`
+- `PROWLARR_URL`, `PROWLARR_API_KEY`, `PROWLARR_INDEXER_ID`
+
+Le mode Jackett reste disponible en fallback avec `TORZNAB_BACKEND=jackett`.
