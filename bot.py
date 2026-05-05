@@ -1863,6 +1863,18 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
             ephemeral=True,
         )
 
+    # Message public dans le salon où la recherche a été lancée, pour prévenir tous les membres.
+    channel = interaction.channel
+    if isinstance(channel, discord.abc.Messageable):
+        public_msg = (
+            f"📢 Nouveau contenu importé : **{label}**\n"
+            f"Ajouté par {interaction.user.mention} • Fichiers déplacés : **{moved_files}**"
+        )
+        try:
+            await channel.send(public_msg)
+        except discord.HTTPException:
+            logger.exception("Unable to send public completion message for %s", info_hash)
+
 # ----------------- MAIN -----------------
 async def main():
     if not DISCORD_TOKEN:
