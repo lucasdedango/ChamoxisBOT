@@ -720,6 +720,31 @@ def human_size(size_str: str) -> str:
     return "?"
 
 
+def clamp_embed_field_lines(lines: List[str], limit: int = 1024) -> str:
+    """
+    Construit un texte <= limit caractères pour un champ embed Discord.
+    """
+    out: List[str] = []
+    used = 0
+    for idx, line in enumerate(lines):
+        extra = len(line) + (1 if out else 0)
+        if used + extra > limit:
+            remaining = len(lines) - idx
+            suffix = f"… (+{remaining} autres)"
+            if out:
+                while out and used + 1 + len(suffix) > limit:
+                    removed = out.pop()
+                    used -= len(removed) + (1 if out else 0)
+                if out and used + 1 + len(suffix) <= limit:
+                    out.append(suffix)
+            elif len(suffix) <= limit:
+                out = [suffix]
+            break
+        out.append(line)
+        used += extra
+    return "\n".join(out) if out else "Aucun détail"
+
+
 def parse_size_bytes(size_str: str) -> int:
     try:
         return int(size_str)
@@ -1827,11 +1852,18 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     )
     embed.add_field(name="Fichiers déplacés", value=str(moved_files), inline=True)
     if move_logs:
-        embed.add_field(name="📂 Copie des fichiers", value="\n".join(move_logs[:12]), inline=False)
+        embed.add_field(name="📂 Copie des fichiers", value=clamp_embed_field_lines(move_logs), inline=False)
     if refresh_lines:
-        embed.add_field(name="🔄 Plex", value="\n".join(refresh_lines), inline=False)
+        embed.add_field(name="🔄 Plex", value=clamp_embed_field_lines(refresh_lines), inline=False)
 
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    try:
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except discord.HTTPException:
+        logger.exception("Embed send failed for auto-import summary, sending compact fallback")
+        await interaction.followup.send(
+            f"✅ Import terminé pour `{label}`\n{msg}\nFichiers déplacés: {moved_files}",
+            ephemeral=True,
+        )
 
 # ----------------- MAIN -----------------
 async def main():
