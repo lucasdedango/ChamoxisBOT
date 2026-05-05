@@ -5,6 +5,7 @@ import asyncio
 import shutil
 import base64
 import logging
+import random
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, TypedDict
 import xml.etree.ElementTree as ET
@@ -31,10 +32,15 @@ PLEX_TOKEN = os.getenv("PLEX_TOKEN", "")
 PLEX_MOVIES_SECTION_ID = os.getenv("PLEX_MOVIES_SECTION_ID", "")
 PLEX_SERIES_SECTION_ID = os.getenv("PLEX_SERIES_SECTION_ID", "")
 
-# Dossiers Plex chez toi
+# Dossiers Plex chez toi (compat legacy + multi-bibliothèques)
 PLEX_ROOT = Path(r"D:\plexmediaserver")
 PLEX_MOVIES = PLEX_ROOT / "movies"
 PLEX_SERIES = PLEX_ROOT / "series"
+PLEX_MOVIES_PATHS_ENV = os.getenv("PLEX_MOVIES_PATHS", "")
+PLEX_SERIES_PATHS_ENV = os.getenv("PLEX_SERIES_PATHS", "")
+STORAGE_PICK_MODE = os.getenv("STORAGE_PICK_MODE", "weighted_random").strip().lower()
+MIN_FREE_GB = float(os.getenv("MIN_FREE_GB", "30"))
+ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0") or "0")
 
 # Backend Torznab (Prowlarr uniquement)
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696").rstrip("/")
@@ -119,6 +125,64 @@ EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
+
+
+def parse_library_paths(raw: str, fallback: Path) -> List[Path]:
+    if not raw.strip():
+        return [fallback]
+    out: List[Path] = []
+    for chunk in raw.split("|"):
+        txt = chunk.strip().strip('"').strip("'")
+        if txt:
+            out.append(Path(txt))
+    return out or [fallback]
+
+
+PLEX_MOVIES_PATHS = parse_library_paths(PLEX_MOVIES_PATHS_ENV, PLEX_MOVIES)
+PLEX_SERIES_PATHS = parse_library_paths(PLEX_SERIES_PATHS_ENV, PLEX_SERIES)
+MIN_FREE_BYTES = int(MIN_FREE_GB * 1024 * 1024 * 1024)
+
+
+class NoStorageAvailableError(RuntimeError):
+    pass
+
+
+def estimate_required_bytes(torrent: dict, files: List[Path]) -> int:
+    total = int(torrent.get("total_size") or 0)
+    if total > 0:
+        return total
+    size = 0
+    for f in files:
+        try:
+            size += f.stat().st_size
+        except OSError:
+            continue
+    return size
+
+
+def pick_storage_root(candidates: List[Path], required_bytes: int) -> Path:
+    allowed: List[Tuple[Path, int]] = []
+    checked: List[str] = []
+    for root in candidates:
+        try:
+            free = shutil.disk_usage(root).free
+        except Exception as e:
+            checked.append(f"{root}=? ({e})")
+            continue
+        checked.append(f"{root}={free // (1024**3)}GiB")
+        if free >= required_bytes + MIN_FREE_BYTES:
+            allowed.append((root, free))
+    if not allowed:
+        raise NoStorageAvailableError(
+            f"Aucun disque éligible (requis={required_bytes // (1024**3)}GiB, marge={MIN_FREE_GB:.1f}GiB). "
+            f"Disques: {', '.join(checked)}"
+        )
+    if STORAGE_PICK_MODE == "random":
+        return random.choice([p for p, _ in allowed])
+    # weighted_random par défaut
+    paths = [p for p, _ in allowed]
+    weights = [max(free - required_bytes, 1) for _, free in allowed]
+    return random.choices(paths, weights=weights, k=1)[0]
 
 
 def load_known_users() -> None:
@@ -294,6 +358,9 @@ class QbitClient:
         data = {"hash": info_hash, "oldPath": old.as_posix(), "newPath": new.as_posix()}
         await self._post_text("/api/v2/torrents/renameFile", data=data)
 
+    async def list_files(self, info_hash: str) -> List[dict]:
+        return await self._get_json("/api/v2/torrents/files", params={"hash": info_hash})
+
 qbit = QbitClient(QBIT_URL, QBIT_USER, QBIT_PASS)
 
 # ----------------- PLEX REFRESH -----------------
@@ -390,6 +457,45 @@ def unique_rel_path(base_dir: Path, rel: Path) -> Path:
         candidate = parent / f"{stem}-{i}{suffix}"
         i += 1
     return candidate
+
+
+def _normalize_relpath_for_match(path_like: str) -> str:
+    p = path_like.replace("\\", "/").strip().lower()
+    p = re.sub(r"\s+", " ", p)
+    return p
+
+
+async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
+    """
+    Renomme un fichier via qBittorrent avec fallback quand oldPath ne correspond pas exactement.
+    """
+    try:
+        await qbit.rename_file(info_hash, old_rel, new_rel)
+        return
+    except RuntimeError as e:
+        if "HTTP 409" not in str(e):
+            raise
+
+    files = await qbit.list_files(info_hash)
+    wanted = _normalize_relpath_for_match(old_rel.as_posix())
+    wanted_name = _normalize_relpath_for_match(old_rel.name)
+    candidates = []
+    for item in files:
+        name = str(item.get("name", ""))
+        norm = _normalize_relpath_for_match(name)
+        if norm == wanted or norm.endswith("/" + wanted):
+            candidates.append(name)
+        elif norm.endswith("/" + wanted_name):
+            candidates.append(name)
+
+    if not candidates:
+        raise RuntimeError(f"HTTP 409 / Fichier introuvable (oldPath={old_rel.as_posix()})")
+    if len(candidates) > 1:
+        exact = [c for c in candidates if _normalize_relpath_for_match(c) == wanted]
+        picked = exact[0] if exact else sorted(candidates, key=len)[-1]
+    else:
+        picked = candidates[0]
+    await qbit.rename_file(info_hash, Path(picked), new_rel)
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -761,23 +867,24 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str], prefs: Impor
     )
 
     if is_series and not is_forced_movie:
-        show, n = await import_series(torrent_name, info_hash, content_root, move_logs, prefs)
-        target_path = PLEX_SERIES / show
+        show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
         msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
         return msg, True, False, n, info_hash
 
-    display, new_path = await import_movie(torrent_name, info_hash, content_root, move_logs, prefs)
+    display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
     msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
     return msg, False, True, 1, info_hash
 
 # ----------------- IMPORT LOGIC -----------------
-async def import_series(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, int]:
+async def import_series(torrent: dict, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, int, Path]:
     r"""
     Déplace TOUS les fichiers vidéo de la série:
     series\Show\Season XX\Show - SXXEYY.ext
     Retourne (show_title, nb_fichiers_deplaces)
     """
     prefs = prefs or {}
+    torrent_name = torrent.get("name", "???")
+    info_hash = torrent.get("hash", "")
     show = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
     files = all_video_files(content_root)
     if not files:
@@ -797,7 +904,9 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
     known.sort(key=lambda x: (x[0], x[1], x[2].name))
     unknown.sort(key=lambda x: x.name)
 
-    target_root = PLEX_SERIES / show
+    required_bytes = estimate_required_bytes(torrent, files)
+    base_root = pick_storage_root(PLEX_SERIES_PATHS, required_bytes)
+    target_root = base_root / show
     ensure_dir(target_root)
     await qbit.set_location(info_hash, target_root)
     logger.info("Series target location set via qBittorrent: %s", target_root)
@@ -819,7 +928,7 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
-        await qbit.rename_file(info_hash, rel_old, new_rel)
+        await rename_file_resilient(info_hash, rel_old, new_rel)
         moved += 1
         if move_logs is not None:
             move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
@@ -844,21 +953,23 @@ async def import_series(torrent_name: str, info_hash: str, content_root: Path, m
         new_rel = unique_rel_path(target_root, season_dir / new_filename)
         ensure_dir(target_root / new_rel.parent)
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
-        await qbit.rename_file(info_hash, rel_old, new_rel)
+        await rename_file_resilient(info_hash, rel_old, new_rel)
         moved += 1
         ep_counter += 1
         if move_logs is not None:
             move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
 
     logger.info("Import series completed: show=%s moved=%s", show, moved)
-    return show, moved
+    return show, moved, target_root
 
-async def import_movie(torrent_name: str, info_hash: str, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, Path]:
+async def import_movie(torrent: dict, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, Path]:
     r"""
     Déplace le plus gros fichier vidéo en:
     movies\Title (Year)\Title (Year).ext
     Retourne (display_name, new_path)
     """
+    torrent_name = torrent.get("name", "???")
+    info_hash = torrent.get("hash", "")
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
@@ -876,6 +987,9 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
         display = f"{title} ({year})" if year else title
 
     movie_dir = PLEX_MOVIES / display
+    required_bytes = estimate_required_bytes(torrent, files)
+    base_root = pick_storage_root(PLEX_MOVIES_PATHS, required_bytes)
+    movie_dir = base_root / display
     ensure_dir(movie_dir)
     await qbit.set_location(info_hash, movie_dir)
     logger.info("Movie target location set via qBittorrent: %s", movie_dir)
@@ -883,7 +997,7 @@ async def import_movie(torrent_name: str, info_hash: str, content_root: Path, mo
     new_filename = f"{display}{video.suffix.lower()}"
     rel_old = video.relative_to(content_root) if content_root.is_dir() else Path(video.name)
     new_rel = unique_rel_path(movie_dir, Path(new_filename))
-    await qbit.rename_file(info_hash, rel_old, new_rel)
+    await rename_file_resilient(info_hash, rel_old, new_rel)
     new_path = movie_dir / new_rel
 
     if move_logs is not None:
@@ -1650,6 +1764,14 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     logger.info("Auto-import requested for hash=%s label=%s by %s", info_hash, label, interaction.user.id)
     try:
         torrent = await qbit.get_torrent_by_hash(info_hash)
+    except NoStorageAvailableError as e:
+        logger.warning("Auto-import blocked (no storage): %s", e)
+        if ALERT_CHANNEL_ID:
+            ch = bot.get_channel(ALERT_CHANNEL_ID)
+            if ch and hasattr(ch, "send"):
+                await ch.send(f"🚨 Stockage plein pour `{label}` ({info_hash[:8]}): {e}")
+        await interaction.followup.send(f"❌ Import bloqué: {e}", ephemeral=True)
+        return
     except Exception as e:
         logger.exception("Auto-import failed while fetching torrent")
         await interaction.followup.send(f"❌ Impossible de récupérer le torrent `{label}` : {e}", ephemeral=True)
@@ -1672,6 +1794,14 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     move_logs: List[str] = []
     try:
         msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
+    except NoStorageAvailableError as e:
+        logger.warning("Auto-import blocked (no storage): %s", e)
+        if ALERT_CHANNEL_ID:
+            ch = bot.get_channel(ALERT_CHANNEL_ID)
+            if ch and hasattr(ch, "send"):
+                await ch.send(f"🚨 Stockage plein pour `{label}` ({info_hash[:8]}): {e}")
+        await interaction.followup.send(f"❌ Import bloqué: {e}", ephemeral=True)
+        return
     except Exception as e:
         logger.exception("Auto-import failed while importing torrent")
         await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
