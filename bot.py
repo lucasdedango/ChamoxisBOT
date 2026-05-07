@@ -2087,9 +2087,9 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
             season = int(prefs.get("season", 0) or 0)
             episode = int(prefs.get("episode", 0) or 0)
             if season > 0:
-                details.append(f"Saison {season}")
+                details.append(f"S{season:02d}")
             if series_mode == "single" and episode > 0:
-                details.append(f"Épisode {episode}")
+                details.append(f"E{episode:02d}")
             details.append("Série")
         elif did_movies:
             details.append("Film")
