@@ -125,6 +125,7 @@ EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
+TRACKING_MAX_SECONDS = 2 * 60 * 60  # 2h
 
 
 def _parse_indexer_ids(raw: str) -> list[str]:
@@ -1439,8 +1440,8 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
     """
     message = await interaction.followup.send(f"📥 Suivi de `{label}`…", ephemeral=True)
     logger.info("Tracking download started: hash=%s label=%s user=%s", info_hash, label, interaction.user.id)
-    max_iterations = 120  # ~10 minutes avec sleep(5)
-    for _ in range(max_iterations):
+    elapsed = 0
+    while elapsed < TRACKING_MAX_SECONDS:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception as e:
@@ -1465,7 +1466,14 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
             await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
             await handle_auto_import(interaction, info_hash, label)
             return
-        await asyncio.sleep(5)
+        if elapsed < 10 * 60:
+            sleep_s = 5
+        elif elapsed < 30 * 60:
+            sleep_s = 15
+        else:
+            sleep_s = 60
+        await asyncio.sleep(sleep_s)
+        elapsed += sleep_s
 
     await message.edit(content="⚠️ Suivi arrêté après délai — dernier état affiché.")
 
@@ -1474,7 +1482,8 @@ async def auto_import_when_complete(interaction: discord.Interaction, info_hash:
     """
     Version silencieuse: attend la fin du torrent puis lance l'import auto.
     """
-    for _ in range(240):  # ~20 min
+    elapsed = 0
+    while elapsed < TRACKING_MAX_SECONDS:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception:
@@ -1487,7 +1496,14 @@ async def auto_import_when_complete(interaction: discord.Interaction, info_hash:
         if progress >= 1.0 or state.startswith("upload") or state.startswith("stalledup"):
             await handle_auto_import(interaction, info_hash, label)
             return
-        await asyncio.sleep(5)
+        if elapsed < 10 * 60:
+            sleep_s = 5
+        elif elapsed < 30 * 60:
+            sleep_s = 15
+        else:
+            sleep_s = 60
+        await asyncio.sleep(sleep_s)
+        elapsed += sleep_s
 
 
 async def auto_import_latest_for_user(
