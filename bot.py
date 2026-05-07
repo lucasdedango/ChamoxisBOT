@@ -606,6 +606,34 @@ def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
     return m.group(1).lower()
 
 
+def parse_torrent_input(link: str) -> Dict[str, str]:
+    value = (link or "").strip()
+    if value.lower().startswith("magnet:?"):
+        return {"kind": "magnet", "normalized_value": value}
+    if value.lower().startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(value)
+        path = parsed.path.lower()
+        if path.endswith(".torrent") or ".torrent?" in value.lower():
+            return {"kind": "torrent_url", "normalized_value": value}
+    raise ValueError("Lien invalide: fournis un magnet ou une URL HTTP(S) vers un fichier .torrent.")
+
+
+async def add_torrent_from_link(link_kind: str, link_value: str, category: str) -> str:
+    if link_kind == "magnet":
+        await qbit.add_magnet(link_value, category=category)
+        return "magnet"
+
+    # URL .torrent: tentative URL directe puis fallback upload
+    try:
+        await qbit.add_magnet(link_value, category=category)
+        return "url"
+    except Exception as e:
+        logger.warning("Direct URL add failed (%r). Falling back to torrent upload.", e)
+    torrent_bytes = await download_torrent_with_retry(link_value)
+    await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=category)
+    return "upload .torrent"
+
+
 def find_torrent_by_name_sync(items: List[dict], name: str) -> Optional[dict]:
     for t in items:
         if t.get("name") == name:
@@ -1495,7 +1523,7 @@ async def auto_import_latest_for_user(
 
 
 class TorrentKindView(discord.ui.View):
-    def __init__(self, query: str, season: int, episode: int, quality: str | None = None, indexer: str = "all"):
+    def __init__(self, query: str, season: int, episode: int, quality: str | None = None, indexer: str = "all", direct_link: Dict[str, str] | None = None):
         super().__init__(timeout=180)
         self.add_item(SearchCancelButton())
         self.query = query
@@ -1503,6 +1531,7 @@ class TorrentKindView(discord.ui.View):
         self.detected_episode = episode
         self.quality = quality
         self.indexer = indexer
+        self.direct_link = direct_link
 
     async def _start(self, interaction: discord.Interaction, kind: str):
         sugg = suggest_target_directories(self.query, kind)
@@ -1517,6 +1546,7 @@ class TorrentKindView(discord.ui.View):
                 episode=self.detected_episode,
                 quality=self.quality,
                 indexer=self.indexer,
+                direct_link=self.direct_link,
             ),
         )
 
@@ -1539,6 +1569,7 @@ class TorrentOptionView(discord.ui.View):
         episode: int = 0,
         quality: str | None = None,
         indexer: str = "all",
+        direct_link: Dict[str, str] | None = None,
     ):
         super().__init__(timeout=300)
         self.query = query
@@ -1549,6 +1580,7 @@ class TorrentOptionView(discord.ui.View):
         self.target_name: str | None = None
         self.quality = quality
         self.indexer = indexer
+        self.direct_link = direct_link
 
         self.add_item(TorrentManualDirButton())
 
@@ -1608,19 +1640,69 @@ class TorrentOptionView(discord.ui.View):
 
         if not await safe_send_interaction(
             interaction,
-            "Configuration validée. Lancement de la recherche...\n" + "\n".join(summary),
+            ("Configuration validée. Lancement de l'import direct...\n" if self.direct_link else "Configuration validée. Lancement de la recherche...\n") + "\n".join(summary),
             ephemeral=True,
         ):
             return
-        await send_torznab_results(
-            interaction,
-            self.query,
-            self.kind,
-            prefs=prefs,
-            track=True,
-            quality=self.quality,
-            indexer=self.indexer,
+        if self.direct_link:
+            await process_direct_torrent_import(interaction, self.direct_link, self.kind, prefs)
+        else:
+            await send_torznab_results(
+                interaction,
+                self.query,
+                self.kind,
+                prefs=prefs,
+                track=True,
+                quality=self.quality,
+                indexer=self.indexer,
+            )
+
+
+async def process_direct_torrent_import(interaction: discord.Interaction, link_input: Dict[str, str], kind: str, prefs: ImportPrefs) -> None:
+    category = "movies" if kind.lower().strip() == "movies" else "series"
+    link_kind = link_input["kind"]
+    link_value = link_input["normalized_value"]
+
+    if DISABLE_TORRENT_DOWNLOAD:
+        await interaction.followup.send(
+            (
+                "🧪 Mode test activé (`DISABLE_TORRENT_DOWNLOAD=true`) :\n"
+                f"- Lien accepté: `{link_kind}`\n"
+                f"- Catégorie: `{category}`\n"
+                "- Aucune action qBittorrent/téléchargement/import n'a été lancée."
+            ),
+            ephemeral=True,
         )
+        return
+
+    try:
+        before = await qbit.list_torrents(limit=100)
+        before_hashes = hashes_from_torrents(before)
+        before_max_added_on = max((int(t.get("added_on", 0) or 0) for t in before), default=0)
+    except Exception as e:
+        await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
+        return
+
+    try:
+        added_via = await add_torrent_from_link(link_kind, link_value, category)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible d'ajouter le torrent: {e}", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"✅ Lien ajouté via `{added_via}` (catégorie: {category}).", ephemeral=True)
+    found = await resolve_added_torrent(
+        before_hashes=before_hashes,
+        title_hint=prefs.get("target_name", ""),
+        category=category,
+        min_added_on=before_max_added_on + 1,
+    )
+    if found and found.get("hash"):
+        h = found["hash"]
+        remember_tracked_torrent(h, interaction.user, prefs)
+        label = found.get("name") or prefs.get("target_name", "torrent")
+        asyncio.create_task(track_download_progress(interaction, h, label))
+    else:
+        await interaction.followup.send("⚠️ Torrent ajouté mais hash non résolu pour le suivi auto.", ephemeral=True)
 
 
 class TorrentDirSelect(discord.ui.Select):
@@ -1915,34 +1997,28 @@ async def recherchetorrent(
 
 
 
-@bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
+@bot.tree.command(name="addtorrent", description="Ajoute un lien magnet/.torrent puis lance le formulaire d'import.")
 @app_commands.describe(
-    magnet="Lien magnet",
-    kind="movies ou series",
-    track="Suivre automatiquement la progression du téléchargement",
+    link="Lien magnet ou URL .torrent",
 )
-async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "movies", track: bool = True):
-    logger.info("/addmagnet called by %s (%s), kind=%s, track=%s", interaction.user, interaction.user.id, kind, track)
-    await interaction.response.defer(ephemeral=True)
-    category = "movies" if kind.lower().strip() == "movies" else "series"
-    info_hash = parse_info_hash_from_magnet(magnet)
+async def addtorrent(interaction: discord.Interaction, link: str):
+    logger.info("/addtorrent called by %s (%s)", interaction.user, interaction.user.id)
     try:
-        await qbit.add_magnet(magnet, category=category)
-        if info_hash:
-            remember_tracked_torrent(info_hash, interaction.user)
-            tracked_msg = f" (suivi pour {interaction.user.display_name or interaction.user.name})"
-        else:
-            tracked_msg = " (hash non détecté : suivi limité)"
-        await interaction.followup.send(f"✅ Magnet ajouté (catégorie: {category}){tracked_msg}.", ephemeral=True)
-        if track:
-            if info_hash:
-                label = f"{category} ({info_hash[:8]})"
-                asyncio.create_task(track_download_progress(interaction, info_hash, label))
-            else:
-                await interaction.followup.send("⚠️ Suivi automatique indisponible (hash introuvable dans le magnet).", ephemeral=True)
-    except Exception as e:
-        logger.exception("/addmagnet failed")
-        await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
+        parsed = parse_torrent_input(link)
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+        return
+
+    content = (
+        f"✅ Lien accepté (`{parsed['kind']}`).\n"
+        "Choisis Film / Série puis renseigne les options (dossier cible, saison/épisode), "
+        "et confirme pour lancer l'import direct."
+    )
+    await interaction.response.send_message(
+        content,
+        view=TorrentKindView(link, 0, 0, quality=None, indexer="all", direct_link=parsed),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
@@ -1975,7 +2051,7 @@ async def info_cmd(interaction: discord.Interaction):
         "**Autres commandes utiles**\n"
         "- `/status` : voir les derniers torrents et leur état.\n"
         "- `/rssfeed` : lire un flux RSS Torznab et ajouter un item rapidement.\n"
-        "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
+        "- `/addtorrent` : ajouter un lien magnet ou URL .torrent.\n"
         "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
         "**Exemples simples**\n"
         "- Film: `/recherchetorrent query:gremlins 2 indexer:all` puis dossier `Gremlins 2 (1990)`.\n"
