@@ -53,6 +53,7 @@ TORZNAB_USER_AGENT = os.getenv(
 )
 TORZNAB_COOLDOWN_SECONDS = 30
 TORZNAB_FORCE_UPLOAD = os.getenv("TORZNAB_FORCE_UPLOAD", "false").lower() in {"1", "true", "yes", "on"}
+DISABLE_TORRENT_DOWNLOAD = os.getenv("DISABLE_TORRENT_DOWNLOAD", "false").lower() in {"1", "true", "yes", "on"}
 
 LOG_FILE = os.getenv("BOT_LOG_FILE", "bot.log")
 LOG_LEVEL = os.getenv("BOT_LOG_LEVEL", "INFO").upper()
@@ -1119,19 +1120,33 @@ class RssSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         logger.info("RSS selection callback by %s (%s)", interaction.user, interaction.user.id)
         await interaction.response.defer(ephemeral=True)
-        try:
-            before = await qbit.list_torrents(limit=100)
-            before_hashes = hashes_from_torrents(before)
-        except Exception as e:
-            logger.exception("qBittorrent unavailable before add")
-            await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
-            return
 
         idx = int(self.values[0])
         item = self.items[idx]
         url = item.get("enclosure") or item.get("link")
         if not url:
             await interaction.followup.send("❌ Lien torrent introuvable dans le flux.", ephemeral=True)
+            return
+
+        if DISABLE_TORRENT_DOWNLOAD:
+            logger.info("Download disabled by env: selected '%s' (category=%s)", item.get("title", "???"), self.category)
+            await interaction.followup.send(
+                (
+                    f"🧪 Mode test activé (`DISABLE_TORRENT_DOWNLOAD=true`) :\n"
+                    f"- Torrent sélectionné: `{item.get('title', '???')}`\n"
+                    f"- Catégorie: `{self.category}`\n"
+                    "- Aucune action qBittorrent/téléchargement/import n'a été lancée."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            before = await qbit.list_torrents(limit=100)
+            before_hashes = hashes_from_torrents(before)
+        except Exception as e:
+            logger.exception("qBittorrent unavailable before add")
+            await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
             return
         added_via = "URL"
         if not TORZNAB_FORCE_UPLOAD:
@@ -1188,11 +1203,25 @@ class RssSelect(discord.ui.Select):
             logger.exception("Failed to track torrent after RSS add")
 
 
+class SearchCancelButton(discord.ui.Button):
+    def __init__(self, label: str = "🛑 Annuler"):
+        super().__init__(label=label, style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
+        view = self.view
+        if isinstance(view, discord.ui.View):
+            for child in view.children:
+                child.disabled = True
+            view.stop()
+        await interaction.response.edit_message(content="🛑 Recherche annulée.", view=view)
+
+
 class RssView(discord.ui.View):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True, *, timeout: float = 120):
         super().__init__(timeout=timeout)
         if items:
             self.add_item(RssSelect(items, category, prefs=prefs, track=track))
+        self.add_item(SearchCancelButton())
 
 
 async def send_torznab_results(
@@ -1343,6 +1372,7 @@ async def auto_import_latest_for_user(
 class TorrentKindView(discord.ui.View):
     def __init__(self, query: str, season: int, episode: int, quality: str | None = None):
         super().__init__(timeout=180)
+        self.add_item(SearchCancelButton())
         self.query = query
         self.detected_season = season
         self.detected_episode = episode
@@ -1415,7 +1445,7 @@ class TorrentOptionView(discord.ui.View):
             discord.SelectOption(label="720p", value="720p"),
         ]
         self.add_item(TorrentQualitySelect(quality_opts, selected=self.quality or "all"))
-
+        self.add_item(SearchCancelButton())
 
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

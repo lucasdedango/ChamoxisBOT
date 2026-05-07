@@ -27,6 +27,7 @@ Optionnel:
 - `TORZNAB_RSS_URL` (si tu veux forcer un flux spécifique)
 - `TORZNAB_USER_AGENT`
 - `TORZNAB_FORCE_UPLOAD`
+- `DISABLE_TORRENT_DOWNLOAD` (mode test: sélection OK, mais sans ajout/téléchargement/import)
 
 ## Configuration Prowlarr
 1. Ajouter l’indexer C411 dans Prowlarr.
