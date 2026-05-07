@@ -523,6 +523,15 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+
+def sanitize_path_component(name: str, fallback: str = "Unknown") -> str:
+    """
+    Nettoie un nom de dossier/fichier pour Windows (retire les caractères invalides).
+    """
+    cleaned = re.sub(r'[<>:"/\\\\|?*]+', " ", name).strip().rstrip(".")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or fallback
+
 def move_file(src: Path, dst: Path, logs: List[str] | None = None) -> Path:
     """
     Ancienne fonction de déplacement local (conservée pour compatibilité).
@@ -934,7 +943,8 @@ async def import_series(torrent: dict, content_root: Path, move_logs: List[str] 
     prefs = prefs or {}
     torrent_name = torrent.get("name", "???")
     info_hash = torrent.get("hash", "")
-    show = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
+    show_raw = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
+    show = sanitize_path_component(show_raw, fallback="Series")
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
@@ -1030,10 +1040,10 @@ async def import_movie(torrent: dict, content_root: Path, move_logs: List[str] |
 
     prefs = prefs or {}
     if prefs.get("target_name"):
-        display = prefs["target_name"]
+        display = sanitize_path_component(str(prefs["target_name"]), fallback="Movie")
     else:
         title, year = build_movie_title_and_year(video.stem)
-        display = f"{title} ({year})" if year else title
+        display = sanitize_path_component(f"{title} ({year})" if year else title, fallback="Movie")
 
     required_bytes = estimate_required_bytes(torrent, files)
     base_root = pick_storage_root(PLEX_MOVIES_PATHS, required_bytes)
