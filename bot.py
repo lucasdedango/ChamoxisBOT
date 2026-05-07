@@ -43,6 +43,8 @@ ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0") or "0")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696").rstrip("/")
 PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
 PROWLARR_INDEXER_ID = os.getenv("PROWLARR_INDEXER_ID", "1")
+PROWLARR_INDEXER_IDS_ENV = os.getenv("PROWLARR_INDEXER_IDS", "").strip()
+PROWLARR_INDEXER_LABELS_ENV = os.getenv("PROWLARR_INDEXER_LABELS", "").strip()
 TORZNAB_RSS_URL = os.getenv(
     "TORZNAB_RSS_URL",
     f"{PROWLARR_URL}/api/v1/indexer/{PROWLARR_INDEXER_ID}/newznab/?apikey={PROWLARR_API_KEY}&t=search&limit=20",
@@ -123,6 +125,27 @@ EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
+
+
+def _parse_indexer_ids(raw: str) -> list[str]:
+    ids = [x.strip() for x in raw.split(",") if x.strip()]
+    if not ids and PROWLARR_INDEXER_ID:
+        ids = [PROWLARR_INDEXER_ID]
+    return ids
+
+
+INDEXER_IDS = _parse_indexer_ids(PROWLARR_INDEXER_IDS_ENV)
+INDEXER_LABELS: dict[str, str] = {}
+if PROWLARR_INDEXER_LABELS_ENV:
+    for pair in [p.strip() for p in PROWLARR_INDEXER_LABELS_ENV.split(",") if p.strip()]:
+        if ":" not in pair:
+            continue
+        idx, label = pair.split(":", 1)
+        INDEXER_LABELS[idx.strip()] = label.strip()
+
+
+def indexer_label(indexer_id: str) -> str:
+    return INDEXER_LABELS.get(indexer_id, f"Indexer {indexer_id}")
 
 
 def parse_library_paths(raw: str, var_name: str) -> List[Path]:
@@ -677,7 +700,7 @@ def check_user_ownership(info_hash: str, user_id: int) -> Tuple[bool, str]:
     return True, ""
 
 
-def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
+def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
     root = ET.fromstring(xml_text)
     channel = root.find("channel")
@@ -697,6 +720,7 @@ def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
                 "enclosure": enclosure_url,
                 "size": enclosure_length or "",
                 "pub_date": pub_date,
+                "source": source or "",
             }
         )
         if len(items) >= limit:
@@ -760,9 +784,9 @@ def quality_matches(title: str, quality: str | None) -> bool:
     return q in t
 
 
-def build_torznab_search_url(query: str, limit: int = 20) -> str:
+def build_torznab_search_url(query: str, limit: int = 20, indexer_id: str | None = None) -> str:
     q = urllib.parse.quote_plus(query)
-    idx = urllib.parse.quote(str(PROWLARR_INDEXER_ID), safe="")
+    idx = urllib.parse.quote(str(indexer_id or PROWLARR_INDEXER_ID), safe="")
     base = f"{PROWLARR_URL}/api/v1/indexer/{idx}/newznab/"
     return f"{base}?apikey={PROWLARR_API_KEY}&t=search&q={q}&limit={limit}"
 
@@ -1231,19 +1255,29 @@ async def send_torznab_results(
     prefs: ImportPrefs | None = None,
     track: bool = True,
     quality: str | None = None,
+    indexer: str = "all",
 ):
-    search_url = build_torznab_search_url(query, limit=MAX_SEARCH_RESULTS)
-    try:
-        xml_text = await fetch_rss(search_url)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Impossible d'interroger Torznab: {e}", ephemeral=True)
-        logger.error("Torznab search failed for query=%s: %s", query, e)
+    target_indexers = INDEXER_IDS if indexer == "all" else [indexer]
+    if not target_indexers:
+        await interaction.followup.send("❌ Aucun indexer configuré (PROWLARR_INDEXER_IDS).", ephemeral=True)
         return
 
-    try:
-        items = parse_rss_feed(xml_text, limit=MAX_SEARCH_RESULTS)
-    except ET.ParseError as e:
-        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
+    items: List[Dict[str, str]] = []
+    errors: List[str] = []
+    for idx in target_indexers:
+        search_url = build_torznab_search_url(query, limit=MAX_SEARCH_RESULTS, indexer_id=idx)
+        try:
+            xml_text = await fetch_rss(search_url)
+            parsed = parse_rss_feed(xml_text, limit=MAX_SEARCH_RESULTS, source=indexer_label(idx))
+            items.extend(parsed)
+        except ET.ParseError as e:
+            errors.append(f"{indexer_label(idx)}: flux RSS invalide ({e})")
+        except Exception as e:
+            errors.append(f"{indexer_label(idx)}: {e}")
+            logger.error("Torznab search failed for query=%s indexer=%s: %s", query, idx, e)
+
+    if not items and errors:
+        await interaction.followup.send("❌ Impossible d'interroger Torznab:\n- " + "\n- ".join(errors), ephemeral=True)
         return
 
     items = [it for it in items if not is_av1_title(it.get("title", ""))]
@@ -1258,10 +1292,12 @@ async def send_torznab_results(
 
     lines = []
     for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
+        source = item.get("source", "?")
+        lines.append(f"{idx}. [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
 
+    selected_indexer_name = "Tous" if indexer == "all" else indexer_label(indexer)
     embed = discord.Embed(
-        title=f"Prowlarr (indexer {PROWLARR_INDEXER_ID}): résultats pour \"{query}\"",
+        title=f"Prowlarr ({selected_indexer_name}): résultats pour \"{query}\"",
         description="\n".join(lines[:25]),
     )
     footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
@@ -1370,13 +1406,14 @@ async def auto_import_latest_for_user(
 
 
 class TorrentKindView(discord.ui.View):
-    def __init__(self, query: str, season: int, episode: int, quality: str | None = None):
+    def __init__(self, query: str, season: int, episode: int, quality: str | None = None, indexer: str = "all"):
         super().__init__(timeout=180)
         self.add_item(SearchCancelButton())
         self.query = query
         self.detected_season = season
         self.detected_episode = episode
         self.quality = quality
+        self.indexer = indexer
 
     async def _start(self, interaction: discord.Interaction, kind: str):
         sugg = suggest_target_directories(self.query, kind)
@@ -1390,6 +1427,7 @@ class TorrentKindView(discord.ui.View):
                 season=self.detected_season,
                 episode=self.detected_episode,
                 quality=self.quality,
+                indexer=self.indexer,
             ),
         )
 
@@ -1411,6 +1449,7 @@ class TorrentOptionView(discord.ui.View):
         season: int = 0,
         episode: int = 0,
         quality: str | None = None,
+        indexer: str = "all",
     ):
         super().__init__(timeout=300)
         self.query = query
@@ -1420,6 +1459,7 @@ class TorrentOptionView(discord.ui.View):
         self.episode = episode
         self.target_name: str | None = None
         self.quality = quality
+        self.indexer = indexer
 
         self.add_item(TorrentManualDirButton())
 
@@ -1450,7 +1490,8 @@ class TorrentOptionView(discord.ui.View):
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.target_name:
-            await interaction.response.send_message(
+            await safe_send_interaction(
+                interaction,
                 "⚠️ Choisis un répertoire cible dans la liste ou saisis-le manuellement.",
                 ephemeral=True,
             )
@@ -1476,10 +1517,12 @@ class TorrentOptionView(discord.ui.View):
             if self.series_mode == "single":
                 summary.append(f"- Episode: {self.episode or 1}")
 
-        await interaction.response.send_message(
+        if not await safe_send_interaction(
+            interaction,
             "Configuration validée. Lancement de la recherche...\n" + "\n".join(summary),
             ephemeral=True,
-        )
+        ):
+            return
         await send_torznab_results(
             interaction,
             self.query,
@@ -1487,6 +1530,7 @@ class TorrentOptionView(discord.ui.View):
             prefs=prefs,
             track=True,
             quality=self.quality,
+            indexer=self.indexer,
         )
 
 
@@ -1499,10 +1543,17 @@ class TorrentDirSelect(discord.ui.Select):
         if isinstance(parent, TorrentOptionView):
             selected = self.values[0]
             if selected == "__manual__":
-                await interaction.response.send_modal(TorrentManualDirModal(parent))
+                try:
+                    await interaction.response.send_modal(TorrentManualDirModal(parent))
+                except discord.NotFound:
+                    logger.warning(
+                        "Interaction expirée avant ouverture du modal (user=%s id=%s)",
+                        getattr(interaction.user, "id", "?"),
+                        getattr(interaction, "id", "?"),
+                    )
                 return
             parent.target_name = selected
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 class TorrentManualDirModal(discord.ui.Modal, title="Répertoire cible"):
@@ -1532,9 +1583,12 @@ class TorrentManualDirButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         parent = self.view
         if not isinstance(parent, TorrentOptionView):
-            await interaction.response.defer()
+            await safe_defer(interaction)
             return
-        await interaction.response.send_modal(TorrentManualDirModal(parent))
+        try:
+            await interaction.response.send_modal(TorrentManualDirModal(parent))
+        except discord.NotFound:
+            logger.warning("Interaction expirée avant ouverture du modal (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
 
 
 class TorrentSeriesModeSelect(discord.ui.Select):
@@ -1545,7 +1599,7 @@ class TorrentSeriesModeSelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.series_mode = self.values[0]
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 class TorrentSeasonSelect(discord.ui.Select):
@@ -1556,7 +1610,7 @@ class TorrentSeasonSelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.season = int(self.values[0])
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 
@@ -1570,7 +1624,7 @@ class TorrentQualitySelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.quality = None if self.values[0] == "all" else self.values[0]
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 
@@ -1583,6 +1637,32 @@ async def setup_hook():
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
     logger.info("Synced %s command(s) to guild %s: %s", len(synced), GUILD_ID, [c.name for c in synced])
+
+
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = False) -> bool:
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.NotFound:
+        logger.warning("Interaction expirée avant defer (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    except discord.HTTPException:
+        logger.exception("Echec defer interaction (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    return False
+
+
+async def safe_send_interaction(interaction: discord.Interaction, *args, **kwargs) -> bool:
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(*args, **kwargs)
+        else:
+            await interaction.response.send_message(*args, **kwargs)
+        return True
+    except discord.NotFound:
+        logger.warning("Interaction expirée avant réponse (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    except discord.HTTPException:
+        logger.exception("Echec envoi réponse interaction (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    return False
 
 @bot.event
 async def on_ready():
@@ -1713,15 +1793,22 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
 @bot.tree.command(name="recherchetorrent", description="Assistant interactif de recherche torrent.")
 @app_commands.describe(
     query="Titre à chercher (ex: Friends ou Friends.S01E01)",
+    indexer="Indexer à utiliser: all (tous), c411 ou torr9",
 )
 async def recherchetorrent(
     interaction: discord.Interaction,
     query: str,
+    indexer: str = "all",
 ):
-    logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
+    logger.info("/recherchetorrent called by %s (%s), indexer=%s", interaction.user, interaction.user.id, indexer)
     if not PROWLARR_API_KEY:
         await interaction.response.send_message("❌ PROWLARR_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
+
+    idx_value = (indexer or "all").strip().lower()
+    if idx_value not in {"all", "c411", "torr9"}:
+        idx_value = "all"
+    mapped_indexer = {"all": "all", "c411": "1", "torr9": "2"}[idx_value]
 
     default_kind, season, episode = default_mode_from_query(query)
 
@@ -1733,7 +1820,7 @@ async def recherchetorrent(
 
     await interaction.response.send_message(
         content,
-        view=TorrentKindView(query, season, episode, quality=None),
+        view=TorrentKindView(query, season, episode, quality=None, indexer=mapped_indexer),
         ephemeral=True,
     )
 
