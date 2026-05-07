@@ -662,6 +662,7 @@ async def resolve_added_torrent(
     before_hashes: set[str],
     title_hint: str,
     category: str,
+    min_added_on: int = 0,
     attempts: int = 6,
     delay: float = 0.7,
 ) -> Optional[dict]:
@@ -669,6 +670,8 @@ async def resolve_added_torrent(
     latest: List[dict] = []
     for _ in range(attempts):
         latest = await qbit.list_torrents(limit=100)
+        if min_added_on > 0:
+            latest = [t for t in latest if int(t.get("added_on", 0) or 0) >= min_added_on]
         new_items = [t for t in latest if str(t.get("hash", "")).lower() not in before_hashes]
         if len(new_items) == 1:
             return new_items[0]
@@ -678,7 +681,11 @@ async def resolve_added_torrent(
                 return cand
         await asyncio.sleep(delay)
 
-    return find_recent_torrent_candidate(latest, title=title_hint, category=category)
+    # Dernier fallback: ne considérer que les torrents ajoutés après le début de l'opération.
+    filtered = latest
+    if min_added_on > 0:
+        filtered = [t for t in latest if int(t.get("added_on", 0) or 0) >= min_added_on]
+    return find_recent_torrent_candidate(filtered, title=title_hint, category=category)
 
 def remember_tracked_torrent(info_hash: str, user: discord.abc.User, prefs: ImportPrefs | None = None):
     """
@@ -1179,6 +1186,7 @@ class RssSelect(discord.ui.Select):
         try:
             before = await qbit.list_torrents(limit=100)
             before_hashes = hashes_from_torrents(before)
+            before_max_added_on = max((int(t.get("added_on", 0) or 0) for t in before), default=0)
         except Exception as e:
             logger.exception("qBittorrent unavailable before add")
             await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
@@ -1218,6 +1226,7 @@ class RssSelect(discord.ui.Select):
                 before_hashes=before_hashes,
                 title_hint=item.get("title", ""),
                 category=self.category,
+                min_added_on=before_max_added_on + 1,
             )
             if found and found.get("hash"):
                 h = found["hash"]
