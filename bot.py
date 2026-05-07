@@ -1140,9 +1140,10 @@ def default_mode_from_query(query: str) -> tuple[str, int, int]:
 class RssSelect(discord.ui.Select):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
-        for idx, item in enumerate(items[:DISCORD_SELECT_MAX_OPTIONS]):
-            label = shorten(item["title"], 90)
-            options.append(discord.SelectOption(label=label, value=str(idx)))
+        for idx, item in enumerate(items[:DISCORD_SELECT_MAX_OPTIONS], start=1):
+            source = item.get("source", "?")
+            label = shorten(f"{idx}. [{source}] {item['title']}", 100)
+            options.append(discord.SelectOption(label=label, value=str(idx - 1)))
         if not options:
             raise ValueError("Aucun résultat sélectionnable pour le menu Discord.")
         super().__init__(placeholder="Choisis un torrent à ajouter", options=options, min_values=1, max_values=1)
@@ -1884,11 +1885,11 @@ async def info_cmd(interaction: discord.Interaction):
         "Ce bot sert à chercher des torrents via Torznab (Prowlarr/Torznab), les ajouter dans qBittorrent, "
         "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
         "**Étape 1 — Commande principale**\n"
-        "- Lance `/recherchetorrent query:<ton titre>` (ex: `andor s02`, `dune part two`).\n"
+        "- Lance `/recherchetorrent query:<ton titre> indexer:<all|c411|torr9>` (indexer optionnel, défaut `all`).\n"
         "- Le bot te demande ensuite Film ou Série.\n"
         "- Tu choisis (ou saisis) le **répertoire cible exact** (ex: `Andor (2022)`).\n"
         "- Pour les séries, tu peux préciser le mode (complet/épisode) et la saison.\n"
-        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse.\n\n"
+        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse (numérotation identique embed + menu).\n\n"
         "**Ce que fait le bot ensuite**\n"
         "1) Ajoute le torrent dans qBittorrent.\n"
         "2) Suit la progression automatiquement.\n"
@@ -1899,8 +1900,8 @@ async def info_cmd(interaction: discord.Interaction):
         "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
         "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
         "**Exemples simples**\n"
-        "- Film: `/recherchetorrent query:gremlins 2` puis dossier `Gremlins 2 (1990)`.\n"
-        "- Série: `/recherchetorrent query:andor s02` puis dossier `Andor (2022)`.\n\n"
+        "- Film: `/recherchetorrent query:gremlins 2 indexer:all` puis dossier `Gremlins 2 (1990)`.\n"
+        "- Série: `/recherchetorrent query:andor s02 indexer:c411` puis dossier `Andor (2022)`.\n\n"
         "**Important**\n"
         "- Le bot est réservé à un usage légal.\n"
         "- Si un import est refusé, vérifie que c'est bien ton torrent (protection par utilisateur)."
