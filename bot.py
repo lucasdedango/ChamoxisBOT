@@ -931,12 +931,37 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str], prefs: Impor
         content_root,
     )
 
+    async def _refresh_content_root_on_missing_video() -> Path:
+        refreshed = await qbit.get_torrent_by_hash(info_hash)
+        if not refreshed:
+            raise RuntimeError("torrent introuvable pendant le rafraîchissement de chemin")
+        refreshed_root = pick_content_path(refreshed)
+        if not refreshed_root:
+            raise RuntimeError("chemin introuvable après rafraîchissement")
+        logger.warning("Content path refresh after missing video: old=%s new=%s hash=%s", content_root, refreshed_root, info_hash)
+        torrent.update(refreshed)
+        return refreshed_root
+
     if is_series and not is_forced_movie:
-        show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
+        try:
+            show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
+        except RuntimeError as e:
+            if "aucune vidéo trouvée" not in str(e):
+                raise
+            logger.warning("Missing video on first series import attempt, refreshing torrent path (hash=%s)", info_hash)
+            content_root = await _refresh_content_root_on_missing_video()
+            show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
         msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
         return msg, True, False, n, info_hash
 
-    display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
+    try:
+        display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
+    except RuntimeError as e:
+        if "aucune vidéo trouvée" not in str(e):
+            raise
+        logger.warning("Missing video on first movie import attempt, refreshing torrent path (hash=%s)", info_hash)
+        content_root = await _refresh_content_root_on_missing_video()
+        display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
     msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
     return msg, False, True, 1, info_hash
 
