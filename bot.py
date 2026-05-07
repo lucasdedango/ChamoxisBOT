@@ -729,6 +729,21 @@ def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) ->
         enclosure_url = enclosure.attrib.get("url") if enclosure is not None else ""
         enclosure_length = enclosure.attrib.get("length") if enclosure is not None else ""
         pub_date = (item.findtext("pubDate") or "").strip()
+        seeders = ""
+        peers = ""
+        grabs = ""
+        for child in item:
+            tag = child.tag.split("}")[-1].lower()
+            if tag != "attr":
+                continue
+            name = str(child.attrib.get("name", "")).lower()
+            value = str(child.attrib.get("value", "")).strip()
+            if name == "seeders":
+                seeders = value
+            elif name in {"peers", "leechers"}:
+                peers = value
+            elif name in {"grabs", "downloads"}:
+                grabs = value
         items.append(
             {
                 "title": title,
@@ -737,6 +752,9 @@ def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) ->
                 "size": enclosure_length or "",
                 "pub_date": pub_date,
                 "source": source or "",
+                "seeders": seeders,
+                "peers": peers,
+                "grabs": grabs,
             }
         )
         if len(items) >= limit:
@@ -758,6 +776,26 @@ def human_size(size_str: str) -> str:
             return f"{n:.1f}{unit}"
         n /= 1024
     return "?"
+
+
+def popularity_badge(item: Dict[str, str]) -> str:
+    try:
+        seeders = int(item.get("seeders", "") or 0)
+    except Exception:
+        seeders = 0
+    try:
+        grabs = int(item.get("grabs", "") or 0)
+    except Exception:
+        grabs = 0
+    # Score simple: seeders comptent plus que les grabs.
+    score = seeders * 3 + grabs
+    if score >= 200:
+        return "🔥"
+    if score >= 80:
+        return "⭐"
+    if score > 0:
+        return "👍"
+    return "·"
 
 
 def clamp_embed_field_lines(lines: List[str], limit: int = 1024) -> str:
@@ -1338,14 +1376,20 @@ async def send_torznab_results(
     lines = []
     for idx, item in enumerate(items, start=1):
         source = item.get("source", "?")
-        lines.append(f"{idx}. [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
+        pop = popularity_badge(item)
+        seeds = item.get("seeders", "?") or "?"
+        grabs = item.get("grabs", "?") or "?"
+        lines.append(
+            f"{idx}. {pop} [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`) "
+            f"[S:{seeds} G:{grabs}]"
+        )
 
     selected_indexer_name = "Tous" if indexer == "all" else indexer_label(indexer)
     embed = discord.Embed(
         title=f"Prowlarr ({selected_indexer_name}): résultats pour \"{query}\"",
         description="\n".join(lines[:25]),
     )
-    footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
+    footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)
