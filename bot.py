@@ -43,6 +43,8 @@ ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0") or "0")
 PROWLARR_URL = os.getenv("PROWLARR_URL", "http://127.0.0.1:9696").rstrip("/")
 PROWLARR_API_KEY = os.getenv("PROWLARR_API_KEY", "")
 PROWLARR_INDEXER_ID = os.getenv("PROWLARR_INDEXER_ID", "1")
+PROWLARR_INDEXER_IDS_ENV = os.getenv("PROWLARR_INDEXER_IDS", "").strip()
+PROWLARR_INDEXER_LABELS_ENV = os.getenv("PROWLARR_INDEXER_LABELS", "").strip()
 TORZNAB_RSS_URL = os.getenv(
     "TORZNAB_RSS_URL",
     f"{PROWLARR_URL}/api/v1/indexer/{PROWLARR_INDEXER_ID}/newznab/?apikey={PROWLARR_API_KEY}&t=search&limit=20",
@@ -123,6 +125,28 @@ EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
+TRACKING_MAX_SECONDS = 2 * 60 * 60  # 2h
+
+
+def _parse_indexer_ids(raw: str) -> list[str]:
+    ids = [x.strip() for x in raw.split(",") if x.strip()]
+    if not ids and PROWLARR_INDEXER_ID:
+        ids = [PROWLARR_INDEXER_ID]
+    return ids
+
+
+INDEXER_IDS = _parse_indexer_ids(PROWLARR_INDEXER_IDS_ENV)
+INDEXER_LABELS: dict[str, str] = {}
+if PROWLARR_INDEXER_LABELS_ENV:
+    for pair in [p.strip() for p in PROWLARR_INDEXER_LABELS_ENV.split(",") if p.strip()]:
+        if ":" not in pair:
+            continue
+        idx, label = pair.split(":", 1)
+        INDEXER_LABELS[idx.strip()] = label.strip()
+
+
+def indexer_label(indexer_id: str) -> str:
+    return INDEXER_LABELS.get(indexer_id, f"Indexer {indexer_id}")
 
 
 def parse_library_paths(raw: str, var_name: str) -> List[Path]:
@@ -500,6 +524,15 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+
+def sanitize_path_component(name: str, fallback: str = "Unknown") -> str:
+    """
+    Nettoie un nom de dossier/fichier pour Windows (retire les caractères invalides).
+    """
+    cleaned = re.sub(r'[<>:"/\\\\|?*]+', " ", name).strip().rstrip(".")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or fallback
+
 def move_file(src: Path, dst: Path, logs: List[str] | None = None) -> Path:
     """
     Ancienne fonction de déplacement local (conservée pour compatibilité).
@@ -574,6 +607,41 @@ def parse_info_hash_from_magnet(magnet: str) -> Optional[str]:
     return m.group(1).lower()
 
 
+def parse_torrent_input(link: str) -> Dict[str, str]:
+    value = (link or "").strip()
+    if value.lower().startswith("magnet:?"):
+        return {"kind": "magnet", "normalized_value": value}
+    if value.lower().startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(value)
+        path = parsed.path.lower()
+        if path.endswith(".torrent") or ".torrent?" in value.lower():
+            return {"kind": "torrent_url", "normalized_value": value}
+    raise ValueError("Lien invalide: fournis un magnet ou une URL HTTP(S) vers un fichier .torrent.")
+
+
+def parse_torrent_attachment(file: discord.Attachment) -> Dict[str, str]:
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".torrent"):
+        raise ValueError("Fichier invalide: envoie un fichier .torrent.")
+    return {"kind": "torrent_url", "normalized_value": file.url}
+
+
+async def add_torrent_from_link(link_kind: str, link_value: str, category: str) -> str:
+    if link_kind == "magnet":
+        await qbit.add_magnet(link_value, category=category)
+        return "magnet"
+
+    # URL .torrent: tentative URL directe puis fallback upload
+    try:
+        await qbit.add_magnet(link_value, category=category)
+        return "url"
+    except Exception as e:
+        logger.warning("Direct URL add failed (%r). Falling back to torrent upload.", e)
+    torrent_bytes = await download_torrent_with_retry(link_value)
+    await qbit.add_torrent_file(torrent_bytes, filename="download.torrent", category=category)
+    return "upload .torrent"
+
+
 def find_torrent_by_name_sync(items: List[dict], name: str) -> Optional[dict]:
     for t in items:
         if t.get("name") == name:
@@ -630,6 +698,7 @@ async def resolve_added_torrent(
     before_hashes: set[str],
     title_hint: str,
     category: str,
+    min_added_on: int = 0,
     attempts: int = 6,
     delay: float = 0.7,
 ) -> Optional[dict]:
@@ -637,6 +706,8 @@ async def resolve_added_torrent(
     latest: List[dict] = []
     for _ in range(attempts):
         latest = await qbit.list_torrents(limit=100)
+        if min_added_on > 0:
+            latest = [t for t in latest if int(t.get("added_on", 0) or 0) >= min_added_on]
         new_items = [t for t in latest if str(t.get("hash", "")).lower() not in before_hashes]
         if len(new_items) == 1:
             return new_items[0]
@@ -646,7 +717,11 @@ async def resolve_added_torrent(
                 return cand
         await asyncio.sleep(delay)
 
-    return find_recent_torrent_candidate(latest, title=title_hint, category=category)
+    # Dernier fallback: ne considérer que les torrents ajoutés après le début de l'opération.
+    filtered = latest
+    if min_added_on > 0:
+        filtered = [t for t in latest if int(t.get("added_on", 0) or 0) >= min_added_on]
+    return find_recent_torrent_candidate(filtered, title=title_hint, category=category)
 
 def remember_tracked_torrent(info_hash: str, user: discord.abc.User, prefs: ImportPrefs | None = None):
     """
@@ -677,7 +752,7 @@ def check_user_ownership(info_hash: str, user_id: int) -> Tuple[bool, str]:
     return True, ""
 
 
-def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
+def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
     root = ET.fromstring(xml_text)
     channel = root.find("channel")
@@ -690,6 +765,21 @@ def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
         enclosure_url = enclosure.attrib.get("url") if enclosure is not None else ""
         enclosure_length = enclosure.attrib.get("length") if enclosure is not None else ""
         pub_date = (item.findtext("pubDate") or "").strip()
+        seeders = ""
+        peers = ""
+        grabs = ""
+        for child in item:
+            tag = child.tag.split("}")[-1].lower()
+            if tag != "attr":
+                continue
+            name = str(child.attrib.get("name", "")).lower()
+            value = str(child.attrib.get("value", "")).strip()
+            if name == "seeders":
+                seeders = value
+            elif name in {"peers", "leechers"}:
+                peers = value
+            elif name in {"grabs", "downloads"}:
+                grabs = value
         items.append(
             {
                 "title": title,
@@ -697,6 +787,10 @@ def parse_rss_feed(xml_text: str, limit: int = 10) -> List[Dict[str, str]]:
                 "enclosure": enclosure_url,
                 "size": enclosure_length or "",
                 "pub_date": pub_date,
+                "source": source or "",
+                "seeders": seeders,
+                "peers": peers,
+                "grabs": grabs,
             }
         )
         if len(items) >= limit:
@@ -718,6 +812,26 @@ def human_size(size_str: str) -> str:
             return f"{n:.1f}{unit}"
         n /= 1024
     return "?"
+
+
+def popularity_badge(item: Dict[str, str]) -> str:
+    try:
+        seeders = int(item.get("seeders", "") or 0)
+    except Exception:
+        seeders = 0
+    try:
+        grabs = int(item.get("grabs", "") or 0)
+    except Exception:
+        grabs = 0
+    # Score simple: seeders comptent plus que les grabs.
+    score = seeders * 3 + grabs
+    if score >= 200:
+        return "🔥"
+    if score >= 80:
+        return "⭐"
+    if score > 0:
+        return "👍"
+    return "·"
 
 
 def clamp_embed_field_lines(lines: List[str], limit: int = 1024) -> str:
@@ -760,9 +874,9 @@ def quality_matches(title: str, quality: str | None) -> bool:
     return q in t
 
 
-def build_torznab_search_url(query: str, limit: int = 20) -> str:
+def build_torznab_search_url(query: str, limit: int = 20, indexer_id: str | None = None) -> str:
     q = urllib.parse.quote_plus(query)
-    idx = urllib.parse.quote(str(PROWLARR_INDEXER_ID), safe="")
+    idx = urllib.parse.quote(str(indexer_id or PROWLARR_INDEXER_ID), safe="")
     base = f"{PROWLARR_URL}/api/v1/indexer/{idx}/newznab/"
     return f"{base}?apikey={PROWLARR_API_KEY}&t=search&q={q}&limit={limit}"
 
@@ -891,12 +1005,37 @@ async def import_torrent_entry(torrent: dict, move_logs: List[str], prefs: Impor
         content_root,
     )
 
+    async def _refresh_content_root_on_missing_video() -> Path:
+        refreshed = await qbit.get_torrent_by_hash(info_hash)
+        if not refreshed:
+            raise RuntimeError("torrent introuvable pendant le rafraîchissement de chemin")
+        refreshed_root = pick_content_path(refreshed)
+        if not refreshed_root:
+            raise RuntimeError("chemin introuvable après rafraîchissement")
+        logger.warning("Content path refresh after missing video: old=%s new=%s hash=%s", content_root, refreshed_root, info_hash)
+        torrent.update(refreshed)
+        return refreshed_root
+
     if is_series and not is_forced_movie:
-        show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
+        try:
+            show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
+        except RuntimeError as e:
+            if "aucune vidéo trouvée" not in str(e):
+                raise
+            logger.warning("Missing video on first series import attempt, refreshing torrent path (hash=%s)", info_hash)
+            content_root = await _refresh_content_root_on_missing_video()
+            show, n, target_path = await import_series(torrent, content_root, move_logs, prefs)
         msg = f"📺 Série: `{torrent_name}` → {n} fichier(s) dans `{target_path}`"
         return msg, True, False, n, info_hash
 
-    display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
+    try:
+        display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
+    except RuntimeError as e:
+        if "aucune vidéo trouvée" not in str(e):
+            raise
+        logger.warning("Missing video on first movie import attempt, refreshing torrent path (hash=%s)", info_hash)
+        content_root = await _refresh_content_root_on_missing_video()
+        display, new_path = await import_movie(torrent, content_root, move_logs, prefs)
     msg = f"🎬 Film: `{torrent_name}` → `{new_path}`"
     return msg, False, True, 1, info_hash
 
@@ -910,7 +1049,8 @@ async def import_series(torrent: dict, content_root: Path, move_logs: List[str] 
     prefs = prefs or {}
     torrent_name = torrent.get("name", "???")
     info_hash = torrent.get("hash", "")
-    show = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
+    show_raw = prefs.get("target_name") or guess_show_title_from_torrent(torrent_name)
+    show = sanitize_path_component(show_raw, fallback="Series")
     files = all_video_files(content_root)
     if not files:
         raise RuntimeError("aucune vidéo trouvée")
@@ -1006,10 +1146,10 @@ async def import_movie(torrent: dict, content_root: Path, move_logs: List[str] |
 
     prefs = prefs or {}
     if prefs.get("target_name"):
-        display = prefs["target_name"]
+        display = sanitize_path_component(str(prefs["target_name"]), fallback="Movie")
     else:
         title, year = build_movie_title_and_year(video.stem)
-        display = f"{title} ({year})" if year else title
+        display = sanitize_path_component(f"{title} ({year})" if year else title, fallback="Movie")
 
     required_bytes = estimate_required_bytes(torrent, files)
     base_root = pick_storage_root(PLEX_MOVIES_PATHS, required_bytes)
@@ -1106,9 +1246,10 @@ def default_mode_from_query(query: str) -> tuple[str, int, int]:
 class RssSelect(discord.ui.Select):
     def __init__(self, items: List[Dict[str, str]], category: str, prefs: ImportPrefs | None = None, track: bool = True):
         options = []
-        for idx, item in enumerate(items[:DISCORD_SELECT_MAX_OPTIONS]):
-            label = shorten(item["title"], 90)
-            options.append(discord.SelectOption(label=label, value=str(idx)))
+        for idx, item in enumerate(items[:DISCORD_SELECT_MAX_OPTIONS], start=1):
+            source = item.get("source", "?")
+            label = shorten(f"{idx}. [{source}] {item['title']}", 100)
+            options.append(discord.SelectOption(label=label, value=str(idx - 1)))
         if not options:
             raise ValueError("Aucun résultat sélectionnable pour le menu Discord.")
         super().__init__(placeholder="Choisis un torrent à ajouter", options=options, min_values=1, max_values=1)
@@ -1144,6 +1285,7 @@ class RssSelect(discord.ui.Select):
         try:
             before = await qbit.list_torrents(limit=100)
             before_hashes = hashes_from_torrents(before)
+            before_max_added_on = max((int(t.get("added_on", 0) or 0) for t in before), default=0)
         except Exception as e:
             logger.exception("qBittorrent unavailable before add")
             await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
@@ -1183,6 +1325,7 @@ class RssSelect(discord.ui.Select):
                 before_hashes=before_hashes,
                 title_hint=item.get("title", ""),
                 category=self.category,
+                min_added_on=before_max_added_on + 1,
             )
             if found and found.get("hash"):
                 h = found["hash"]
@@ -1231,19 +1374,29 @@ async def send_torznab_results(
     prefs: ImportPrefs | None = None,
     track: bool = True,
     quality: str | None = None,
+    indexer: str = "all",
 ):
-    search_url = build_torznab_search_url(query, limit=MAX_SEARCH_RESULTS)
-    try:
-        xml_text = await fetch_rss(search_url)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Impossible d'interroger Torznab: {e}", ephemeral=True)
-        logger.error("Torznab search failed for query=%s: %s", query, e)
+    target_indexers = INDEXER_IDS if indexer == "all" else [indexer]
+    if not target_indexers:
+        await interaction.followup.send("❌ Aucun indexer configuré (PROWLARR_INDEXER_IDS).", ephemeral=True)
         return
 
-    try:
-        items = parse_rss_feed(xml_text, limit=MAX_SEARCH_RESULTS)
-    except ET.ParseError as e:
-        await interaction.followup.send(f"❌ Flux RSS invalide: {e}", ephemeral=True)
+    items: List[Dict[str, str]] = []
+    errors: List[str] = []
+    for idx in target_indexers:
+        search_url = build_torznab_search_url(query, limit=MAX_SEARCH_RESULTS, indexer_id=idx)
+        try:
+            xml_text = await fetch_rss(search_url)
+            parsed = parse_rss_feed(xml_text, limit=MAX_SEARCH_RESULTS, source=indexer_label(idx))
+            items.extend(parsed)
+        except ET.ParseError as e:
+            errors.append(f"{indexer_label(idx)}: flux RSS invalide ({e})")
+        except Exception as e:
+            errors.append(f"{indexer_label(idx)}: {e}")
+            logger.error("Torznab search failed for query=%s indexer=%s: %s", query, idx, e)
+
+    if not items and errors:
+        await interaction.followup.send("❌ Impossible d'interroger Torznab:\n- " + "\n- ".join(errors), ephemeral=True)
         return
 
     items = [it for it in items if not is_av1_title(it.get("title", ""))]
@@ -1258,13 +1411,21 @@ async def send_torznab_results(
 
     lines = []
     for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
+        source = item.get("source", "?")
+        pop = popularity_badge(item)
+        seeds = item.get("seeders", "?") or "?"
+        grabs = item.get("grabs", "?") or "?"
+        lines.append(
+            f"{idx}. {pop} [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`) "
+            f"[S:{seeds} G:{grabs}]"
+        )
 
+    selected_indexer_name = "Tous" if indexer == "all" else indexer_label(indexer)
     embed = discord.Embed(
-        title=f"Prowlarr (indexer {PROWLARR_INDEXER_ID}): résultats pour \"{query}\"",
+        title=f"Prowlarr ({selected_indexer_name}): résultats pour \"{query}\"",
         description="\n".join(lines[:25]),
     )
-    footer = f"Tri: poids décroissant | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
+    footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)
@@ -1286,8 +1447,8 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
     """
     message = await interaction.followup.send(f"📥 Suivi de `{label}`…", ephemeral=True)
     logger.info("Tracking download started: hash=%s label=%s user=%s", info_hash, label, interaction.user.id)
-    max_iterations = 120  # ~10 minutes avec sleep(5)
-    for _ in range(max_iterations):
+    elapsed = 0
+    while elapsed < TRACKING_MAX_SECONDS:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception as e:
@@ -1312,7 +1473,14 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
             await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
             await handle_auto_import(interaction, info_hash, label)
             return
-        await asyncio.sleep(5)
+        if elapsed < 10 * 60:
+            sleep_s = 5
+        elif elapsed < 30 * 60:
+            sleep_s = 15
+        else:
+            sleep_s = 60
+        await asyncio.sleep(sleep_s)
+        elapsed += sleep_s
 
     await message.edit(content="⚠️ Suivi arrêté après délai — dernier état affiché.")
 
@@ -1321,7 +1489,8 @@ async def auto_import_when_complete(interaction: discord.Interaction, info_hash:
     """
     Version silencieuse: attend la fin du torrent puis lance l'import auto.
     """
-    for _ in range(240):  # ~20 min
+    elapsed = 0
+    while elapsed < TRACKING_MAX_SECONDS:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception:
@@ -1334,7 +1503,14 @@ async def auto_import_when_complete(interaction: discord.Interaction, info_hash:
         if progress >= 1.0 or state.startswith("upload") or state.startswith("stalledup"):
             await handle_auto_import(interaction, info_hash, label)
             return
-        await asyncio.sleep(5)
+        if elapsed < 10 * 60:
+            sleep_s = 5
+        elif elapsed < 30 * 60:
+            sleep_s = 15
+        else:
+            sleep_s = 60
+        await asyncio.sleep(sleep_s)
+        elapsed += sleep_s
 
 
 async def auto_import_latest_for_user(
@@ -1370,13 +1546,15 @@ async def auto_import_latest_for_user(
 
 
 class TorrentKindView(discord.ui.View):
-    def __init__(self, query: str, season: int, episode: int, quality: str | None = None):
+    def __init__(self, query: str, season: int, episode: int, quality: str | None = None, indexer: str = "all", direct_link: Dict[str, str] | None = None):
         super().__init__(timeout=180)
         self.add_item(SearchCancelButton())
         self.query = query
         self.detected_season = season
         self.detected_episode = episode
         self.quality = quality
+        self.indexer = indexer
+        self.direct_link = direct_link
 
     async def _start(self, interaction: discord.Interaction, kind: str):
         sugg = suggest_target_directories(self.query, kind)
@@ -1390,6 +1568,8 @@ class TorrentKindView(discord.ui.View):
                 season=self.detected_season,
                 episode=self.detected_episode,
                 quality=self.quality,
+                indexer=self.indexer,
+                direct_link=self.direct_link,
             ),
         )
 
@@ -1411,6 +1591,8 @@ class TorrentOptionView(discord.ui.View):
         season: int = 0,
         episode: int = 0,
         quality: str | None = None,
+        indexer: str = "all",
+        direct_link: Dict[str, str] | None = None,
     ):
         super().__init__(timeout=300)
         self.query = query
@@ -1420,6 +1602,8 @@ class TorrentOptionView(discord.ui.View):
         self.episode = episode
         self.target_name: str | None = None
         self.quality = quality
+        self.indexer = indexer
+        self.direct_link = direct_link
 
         self.add_item(TorrentManualDirButton())
 
@@ -1450,7 +1634,8 @@ class TorrentOptionView(discord.ui.View):
     @discord.ui.button(label="✅ Confirmer et chercher", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.target_name:
-            await interaction.response.send_message(
+            await safe_send_interaction(
+                interaction,
                 "⚠️ Choisis un répertoire cible dans la liste ou saisis-le manuellement.",
                 ephemeral=True,
             )
@@ -1476,18 +1661,76 @@ class TorrentOptionView(discord.ui.View):
             if self.series_mode == "single":
                 summary.append(f"- Episode: {self.episode or 1}")
 
-        await interaction.response.send_message(
-            "Configuration validée. Lancement de la recherche...\n" + "\n".join(summary),
+        if not await safe_send_interaction(
+            interaction,
+            ("Configuration validée. Lancement de l'import direct...\n" if self.direct_link else "Configuration validée. Lancement de la recherche...\n") + "\n".join(summary),
+            ephemeral=True,
+        ):
+            return
+        if self.direct_link:
+            await process_direct_torrent_import(interaction, self.direct_link, self.kind, prefs)
+        else:
+            await send_torznab_results(
+                interaction,
+                self.query,
+                self.kind,
+                prefs=prefs,
+                track=True,
+                quality=self.quality,
+                indexer=self.indexer,
+            )
+
+
+async def process_direct_torrent_import(
+    interaction: discord.Interaction,
+    link_input: Dict[str, str],
+    kind: str,
+    prefs: ImportPrefs,
+) -> None:
+    category = "movies" if kind.lower().strip() == "movies" else "series"
+    link_kind = link_input["kind"]
+    link_value = link_input["normalized_value"]
+
+    if DISABLE_TORRENT_DOWNLOAD:
+        await interaction.followup.send(
+            (
+                "🧪 Mode test activé (`DISABLE_TORRENT_DOWNLOAD=true`) :\n"
+                f"- Lien accepté: `{link_kind}`\n"
+                f"- Catégorie: `{category}`\n"
+                "- Aucune action qBittorrent/téléchargement/import n'a été lancée."
+            ),
             ephemeral=True,
         )
-        await send_torznab_results(
-            interaction,
-            self.query,
-            self.kind,
-            prefs=prefs,
-            track=True,
-            quality=self.quality,
-        )
+        return
+
+    try:
+        before = await qbit.list_torrents(limit=100)
+        before_hashes = hashes_from_torrents(before)
+        before_max_added_on = max((int(t.get("added_on", 0) or 0) for t in before), default=0)
+    except Exception as e:
+        await interaction.followup.send(f"❌ qBittorrent indisponible: {e}", ephemeral=True)
+        return
+
+    try:
+        added_via = await add_torrent_from_link(link_kind, link_value, category)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Impossible d'ajouter le torrent: {e}", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"✅ Lien ajouté via `{added_via}` (catégorie: {category}).", ephemeral=True)
+    found = await resolve_added_torrent(
+        before_hashes=before_hashes,
+        title_hint=prefs.get("target_name", ""),
+        category=category,
+        min_added_on=before_max_added_on + 1,
+    )
+    if found and found.get("hash"):
+        h = found["hash"]
+        remember_tracked_torrent(h, interaction.user, prefs)
+        label = found.get("name") or prefs.get("target_name", "torrent")
+        asyncio.create_task(track_download_progress(interaction, h, label))
+    else:
+        await interaction.followup.send("⚠️ Torrent ajouté mais hash non résolu pour le suivi auto.", ephemeral=True)
 
 
 class TorrentDirSelect(discord.ui.Select):
@@ -1499,10 +1742,17 @@ class TorrentDirSelect(discord.ui.Select):
         if isinstance(parent, TorrentOptionView):
             selected = self.values[0]
             if selected == "__manual__":
-                await interaction.response.send_modal(TorrentManualDirModal(parent))
+                try:
+                    await interaction.response.send_modal(TorrentManualDirModal(parent))
+                except discord.NotFound:
+                    logger.warning(
+                        "Interaction expirée avant ouverture du modal (user=%s id=%s)",
+                        getattr(interaction.user, "id", "?"),
+                        getattr(interaction, "id", "?"),
+                    )
                 return
             parent.target_name = selected
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 class TorrentManualDirModal(discord.ui.Modal, title="Répertoire cible"):
@@ -1532,9 +1782,12 @@ class TorrentManualDirButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):  # type: ignore[override]
         parent = self.view
         if not isinstance(parent, TorrentOptionView):
-            await interaction.response.defer()
+            await safe_defer(interaction)
             return
-        await interaction.response.send_modal(TorrentManualDirModal(parent))
+        try:
+            await interaction.response.send_modal(TorrentManualDirModal(parent))
+        except discord.NotFound:
+            logger.warning("Interaction expirée avant ouverture du modal (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
 
 
 class TorrentSeriesModeSelect(discord.ui.Select):
@@ -1545,7 +1798,7 @@ class TorrentSeriesModeSelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.series_mode = self.values[0]
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 class TorrentSeasonSelect(discord.ui.Select):
@@ -1556,7 +1809,7 @@ class TorrentSeasonSelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.season = int(self.values[0])
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 
@@ -1570,7 +1823,7 @@ class TorrentQualitySelect(discord.ui.Select):
         parent = self.view
         if isinstance(parent, TorrentOptionView):
             parent.quality = None if self.values[0] == "all" else self.values[0]
-        await interaction.response.defer()
+        await safe_defer(interaction)
 
 
 
@@ -1583,6 +1836,32 @@ async def setup_hook():
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
     logger.info("Synced %s command(s) to guild %s: %s", len(synced), GUILD_ID, [c.name for c in synced])
+
+
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = False) -> bool:
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.NotFound:
+        logger.warning("Interaction expirée avant defer (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    except discord.HTTPException:
+        logger.exception("Echec defer interaction (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    return False
+
+
+async def safe_send_interaction(interaction: discord.Interaction, *args, **kwargs) -> bool:
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(*args, **kwargs)
+        else:
+            await interaction.response.send_message(*args, **kwargs)
+        return True
+    except discord.NotFound:
+        logger.warning("Interaction expirée avant réponse (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    except discord.HTTPException:
+        logger.exception("Echec envoi réponse interaction (user=%s id=%s)", getattr(interaction.user, "id", "?"), getattr(interaction, "id", "?"))
+    return False
 
 @bot.event
 async def on_ready():
@@ -1713,15 +1992,22 @@ async def rssfeed(interaction: discord.Interaction, url: str | None = None, limi
 @bot.tree.command(name="recherchetorrent", description="Assistant interactif de recherche torrent.")
 @app_commands.describe(
     query="Titre à chercher (ex: Friends ou Friends.S01E01)",
+    indexer="Indexer à utiliser: all (tous), c411 ou torr9",
 )
 async def recherchetorrent(
     interaction: discord.Interaction,
     query: str,
+    indexer: str = "all",
 ):
-    logger.info("/recherchetorrent called by %s (%s)", interaction.user, interaction.user.id)
+    logger.info("/recherchetorrent called by %s (%s), indexer=%s", interaction.user, interaction.user.id, indexer)
     if not PROWLARR_API_KEY:
         await interaction.response.send_message("❌ PROWLARR_API_KEY manquant dans l'environnement.", ephemeral=True)
         return
+
+    idx_value = (indexer or "all").strip().lower()
+    if idx_value not in {"all", "c411", "torr9"}:
+        idx_value = "all"
+    mapped_indexer = {"all": "all", "c411": "1", "torr9": "2"}[idx_value]
 
     default_kind, season, episode = default_mode_from_query(query)
 
@@ -1733,40 +2019,38 @@ async def recherchetorrent(
 
     await interaction.response.send_message(
         content,
-        view=TorrentKindView(query, season, episode, quality=None),
+        view=TorrentKindView(query, season, episode, quality=None, indexer=mapped_indexer),
         ephemeral=True,
     )
 
 
 
-@bot.tree.command(name="addmagnet", description="Ajoute un magnet à qBittorrent (usage légal).")
+@bot.tree.command(name="addtorrent", description="Ajoute un lien magnet/.torrent puis lance le formulaire d'import.")
 @app_commands.describe(
-    magnet="Lien magnet",
-    kind="movies ou series",
-    track="Suivre automatiquement la progression du téléchargement",
+    link="Lien magnet ou URL .torrent",
+    file="Fichier .torrent en pièce jointe",
 )
-async def addmagnet(interaction: discord.Interaction, magnet: str, kind: str = "movies", track: bool = True):
-    logger.info("/addmagnet called by %s (%s), kind=%s, track=%s", interaction.user, interaction.user.id, kind, track)
-    await interaction.response.defer(ephemeral=True)
-    category = "movies" if kind.lower().strip() == "movies" else "series"
-    info_hash = parse_info_hash_from_magnet(magnet)
+async def addtorrent(interaction: discord.Interaction, link: str | None = None, file: discord.Attachment | None = None):
+    logger.info("/addtorrent called by %s (%s)", interaction.user, interaction.user.id)
+    if bool(link) == bool(file):
+        await interaction.response.send_message("❌ Fournis soit `link`, soit `file` (.torrent), mais pas les deux.", ephemeral=True)
+        return
     try:
-        await qbit.add_magnet(magnet, category=category)
-        if info_hash:
-            remember_tracked_torrent(info_hash, interaction.user)
-            tracked_msg = f" (suivi pour {interaction.user.display_name or interaction.user.name})"
-        else:
-            tracked_msg = " (hash non détecté : suivi limité)"
-        await interaction.followup.send(f"✅ Magnet ajouté (catégorie: {category}){tracked_msg}.", ephemeral=True)
-        if track:
-            if info_hash:
-                label = f"{category} ({info_hash[:8]})"
-                asyncio.create_task(track_download_progress(interaction, info_hash, label))
-            else:
-                await interaction.followup.send("⚠️ Suivi automatique indisponible (hash introuvable dans le magnet).", ephemeral=True)
-    except Exception as e:
-        logger.exception("/addmagnet failed")
-        await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
+        parsed = parse_torrent_input(link) if link else parse_torrent_attachment(file)  # type: ignore[arg-type]
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+        return
+
+    content = (
+        f"✅ Lien accepté (`{parsed['kind']}`).\n"
+        "Choisis Film / Série puis renseigne les options (dossier cible, saison/épisode), "
+        "et confirme pour lancer l'import direct."
+    )
+    await interaction.response.send_message(
+        content,
+        view=TorrentKindView(link or (file.filename if file else "upload.torrent"), 0, 0, quality=None, indexer="all", direct_link=parsed),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
@@ -1787,11 +2071,11 @@ async def info_cmd(interaction: discord.Interaction):
         "Ce bot sert à chercher des torrents via Torznab (Prowlarr/Torznab), les ajouter dans qBittorrent, "
         "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
         "**Étape 1 — Commande principale**\n"
-        "- Lance `/recherchetorrent query:<ton titre>` (ex: `andor s02`, `dune part two`).\n"
+        "- Lance `/recherchetorrent query:<ton titre> indexer:<all|c411|torr9>` (indexer optionnel, défaut `all`).\n"
         "- Le bot te demande ensuite Film ou Série.\n"
         "- Tu choisis (ou saisis) le **répertoire cible exact** (ex: `Andor (2022)`).\n"
         "- Pour les séries, tu peux préciser le mode (complet/épisode) et la saison.\n"
-        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse.\n\n"
+        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse (numérotation identique embed + menu).\n\n"
         "**Ce que fait le bot ensuite**\n"
         "1) Ajoute le torrent dans qBittorrent.\n"
         "2) Suit la progression automatiquement.\n"
@@ -1799,11 +2083,11 @@ async def info_cmd(interaction: discord.Interaction):
         "**Autres commandes utiles**\n"
         "- `/status` : voir les derniers torrents et leur état.\n"
         "- `/rssfeed` : lire un flux RSS Torznab et ajouter un item rapidement.\n"
-        "- `/addmagnet` : ajouter un lien magnet manuellement.\n"
+        "- `/addtorrent` : ajouter un lien magnet ou URL .torrent.\n"
         "- `/cleartorrents` : réinitialiser la mémoire des torrents suivis.\n\n"
         "**Exemples simples**\n"
-        "- Film: `/recherchetorrent query:gremlins 2` puis dossier `Gremlins 2 (1990)`.\n"
-        "- Série: `/recherchetorrent query:andor s02` puis dossier `Andor (2022)`.\n\n"
+        "- Film: `/recherchetorrent query:gremlins 2 indexer:all` puis dossier `Gremlins 2 (1990)`.\n"
+        "- Série: `/recherchetorrent query:andor s02 indexer:c411` puis dossier `Andor (2022)`.\n\n"
         "**Important**\n"
         "- Le bot est réservé à un usage légal.\n"
         "- Si un import est refusé, vérifie que c'est bien ton torrent (protection par utilisateur)."
@@ -1844,9 +2128,10 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
         await interaction.followup.send(f"⏳ `{label}` n'est pas encore terminé ({int(progress * 100)}%).", ephemeral=True)
         return
 
+    prefs = get_tracked_prefs(info_hash)
     move_logs: List[str] = []
     try:
-        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
+        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, prefs)
     except NoStorageAvailableError as e:
         logger.warning("Auto-import blocked (no storage): %s", e)
         if ALERT_CHANNEL_ID:
@@ -1896,8 +2181,30 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     # Message public dans le salon où la recherche a été lancée, pour prévenir tous les membres.
     channel = interaction.channel
     if isinstance(channel, discord.abc.Messageable):
+        clean_title = sanitize_path_component(str(prefs.get("target_name") or ""), fallback="").strip()
+        if not clean_title:
+            if did_movies:
+                movie_title, movie_year = build_movie_title_and_year(str(torrent.get("name", label)))
+                clean_title = sanitize_path_component(f"{movie_title} ({movie_year})" if movie_year else movie_title, fallback=label)
+            else:
+                clean_title = sanitize_path_component(guess_show_title_from_torrent(str(torrent.get("name", label))), fallback=label)
+
+        details: List[str] = []
+        if did_series:
+            series_mode = str(prefs.get("series_mode", "complete"))
+            season = int(prefs.get("season", 0) or 0)
+            episode = int(prefs.get("episode", 0) or 0)
+            if season > 0:
+                details.append(f"S{season:02d}")
+            if series_mode == "single" and episode > 0:
+                details.append(f"E{episode:02d}")
+            details.append("Série")
+        elif did_movies:
+            details.append("Film")
+
+        details_txt = f" ({' • '.join(details)})" if details else ""
         public_msg = (
-            f"📢 Nouveau contenu importé : **{label}**\n"
+            f"📢 Nouveau contenu importé : **{clean_title}**{details_txt}\n"
             f"Ajouté par {interaction.user.mention} • Fichiers déplacés : **{moved_files}**"
         )
         try:
