@@ -1976,9 +1976,10 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
         await interaction.followup.send(f"⏳ `{label}` n'est pas encore terminé ({int(progress * 100)}%).", ephemeral=True)
         return
 
+    prefs = get_tracked_prefs(info_hash)
     move_logs: List[str] = []
     try:
-        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, get_tracked_prefs(info_hash))
+        msg, did_series, did_movies, moved_files, _ = await import_torrent_entry(torrent, move_logs, prefs)
     except NoStorageAvailableError as e:
         logger.warning("Auto-import blocked (no storage): %s", e)
         if ALERT_CHANNEL_ID:
@@ -2028,8 +2029,30 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     # Message public dans le salon où la recherche a été lancée, pour prévenir tous les membres.
     channel = interaction.channel
     if isinstance(channel, discord.abc.Messageable):
+        clean_title = sanitize_path_component(str(prefs.get("target_name") or ""), fallback="").strip()
+        if not clean_title:
+            if did_movies:
+                movie_title, movie_year = build_movie_title_and_year(str(torrent.get("name", label)))
+                clean_title = sanitize_path_component(f"{movie_title} ({movie_year})" if movie_year else movie_title, fallback=label)
+            else:
+                clean_title = sanitize_path_component(guess_show_title_from_torrent(str(torrent.get("name", label))), fallback=label)
+
+        details: List[str] = []
+        if did_series:
+            series_mode = str(prefs.get("series_mode", "complete"))
+            season = int(prefs.get("season", 0) or 0)
+            episode = int(prefs.get("episode", 0) or 0)
+            if season > 0:
+                details.append(f"Saison {season}")
+            if series_mode == "single" and episode > 0:
+                details.append(f"Épisode {episode}")
+            details.append("Série")
+        elif did_movies:
+            details.append("Film")
+
+        details_txt = f" ({' • '.join(details)})" if details else ""
         public_msg = (
-            f"📢 Nouveau contenu importé : **{label}**\n"
+            f"📢 Nouveau contenu importé : **{clean_title}**{details_txt}\n"
             f"Ajouté par {interaction.user.mention} • Fichiers déplacés : **{moved_files}**"
         )
         try:
