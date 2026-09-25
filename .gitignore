@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.py[cod]
+*.log
+logs.txt
+known_users.json

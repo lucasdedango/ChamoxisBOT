@@ -43,6 +43,11 @@ python bot.py
 - `/recherchetorrent` : recherche via Prowlarr
 - `/rssfeed` : lit un flux RSS Torznab et propose un ajout rapide
 
+Le bot utilise uniquement des interactions/slash commands et ne requiert pas le
+**Message Content Intent** privilégié. Les suivis longs sont publiés comme des
+messages normaux du bot afin de rester modifiables après l'expiration d'une
+interaction Discord.
+
 ## Dépannage
 - Erreur `PROWLARR_API_KEY manquant` : renseigner la variable dans `.env`.
 - 401/403: vérifier URL/API key Prowlarr et accessibilité réseau.
