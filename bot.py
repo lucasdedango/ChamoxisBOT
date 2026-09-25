@@ -3,13 +3,13 @@ import re
 import json
 import asyncio
 import shutil
-import base64
 import logging
 import random
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, TypedDict
 import xml.etree.ElementTree as ET
 import urllib.parse
+from collections.abc import Mapping
 
 import aiohttp
 import discord
@@ -70,6 +70,37 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger("chamoxisbot")
+
+_SECRET_RE = re.compile(
+    r"(?i)(?P<key>apikey|api_key|token|password|passwd|authorization)(?P<sep>\s*[=:]\s*|%3[dD])(?P<value>[^&\s,;]+)"
+)
+
+
+def redact_sensitive(value: object) -> object:
+    """Return a log-safe copy while preserving useful URL/request context."""
+    if isinstance(value, str):
+        return _SECRET_RE.sub(lambda m: f"{m.group('key')}{m.group('sep')}***REDACTED***", value)
+    if isinstance(value, Mapping):
+        return {
+            key: ("***REDACTED***" if str(key).lower() in {"apikey", "api_key", "token", "password", "passwd", "authorization"} else redact_sensitive(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive(item) for item in value)
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    return value
+
+
+class SensitiveDataFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact_sensitive(record.msg)
+        record.args = redact_sensitive(record.args)
+        return True
+
+
+for handler in logging.getLogger().handlers:
+    handler.addFilter(SensitiveDataFilter())
 logger.info("Logger initialized (level=%s, file=%s)", LOG_LEVEL, LOG_FILE)
 
 # Ton serveur Discord (sync instant)
@@ -99,6 +130,9 @@ JUNK_TOKENS = {
 }
 
 intents = discord.Intents.default()
+# Le bot n'utilise ni commandes préfixées ni on_message; le privileged intent
+# Message Content reste donc explicitement désactivé.
+intents.message_content = False
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -126,6 +160,25 @@ DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
 TRACKING_MAX_SECONDS = 2 * 60 * 60  # 2h
+_background_tasks: set[asyncio.Task] = set()
+
+
+def spawn_background(coro, *, name: str) -> asyncio.Task:
+    """Start and retain a task; always consume and log its terminal exception."""
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+
+    def _finished(done: asyncio.Task) -> None:
+        _background_tasks.discard(done)
+        if done.cancelled():
+            logger.info("Background task cancelled: %s", done.get_name())
+            return
+        error = done.exception()
+        if error is not None:
+            logger.error("Background task failed: %s", done.get_name(), exc_info=(type(error), error, error.__traceback__))
+
+    task.add_done_callback(_finished)
+    return task
 
 
 def _parse_indexer_ids(raw: str) -> list[str]:
@@ -241,6 +294,14 @@ def register_known_user(user_id: int) -> bool:
     return True
 
 # ----------------- QBITTORRENT CLIENT -----------------
+class QbitApiError(RuntimeError):
+    def __init__(self, status: int, endpoint: str, response: str):
+        self.status = status
+        self.endpoint = endpoint
+        self.response = response
+        super().__init__(f"qBittorrent HTTP {status} on {endpoint}: {response or '<empty response>'}")
+
+
 class QbitClient:
     def __init__(self, base_url: str, user: str, password: str):
         self.base_url = base_url
@@ -292,10 +353,10 @@ class QbitClient:
                 await self.ensure_login()
                 async with self.session.get(url, params=params) as r2:
                     if r2.status != 200:
-                        raise RuntimeError(f"HTTP {r2.status} / {await r2.text()}")
+                        raise QbitApiError(r2.status, path, await r2.text())
                     return await r2.json()
             if r.status != 200:
-                raise RuntimeError(f"HTTP {r.status} / {await r.text()}")
+                raise QbitApiError(r.status, path, await r.text())
             return await r.json()
 
     async def _post_text(self, path: str, data: dict):
@@ -311,10 +372,10 @@ class QbitClient:
                 await self.ensure_login()
                 async with self.session.post(url, data=data) as r2:
                     if r2.status != 200:
-                        raise RuntimeError(f"HTTP {r2.status} / {await r2.text()}")
+                        raise QbitApiError(r2.status, path, await r2.text())
                     return await r2.text()
             if r.status != 200:
-                raise RuntimeError(f"HTTP {r.status} / {await r.text()}")
+                raise QbitApiError(r.status, path, await r.text())
             return await r.text()
 
     async def list_torrents(self, limit: int = 10):
@@ -491,35 +552,79 @@ def _normalize_relpath_for_match(path_like: str) -> str:
 
 async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
     """
-    Renomme un fichier via qBittorrent avec fallback quand oldPath ne correspond pas exactement.
-    """
-    try:
-        await qbit.rename_file(info_hash, old_rel, new_rel)
-        return
-    except RuntimeError as e:
-        if "HTTP 409" not in str(e):
-            raise
+    Renomme avec un état frais et rend une reprise après import partiel idempotente.
 
+    Un HTTP 409 est volontairement conservé comme conflit générique: qBittorrent
+    l'utilise pour plusieurs erreurs et pas uniquement pour un oldPath absent.
+    """
+    torrent = await qbit.get_torrent_by_hash(info_hash)
     files = await qbit.list_files(info_hash)
+    names = [str(item.get("name", "")) for item in files]
     wanted = _normalize_relpath_for_match(old_rel.as_posix())
     wanted_name = _normalize_relpath_for_match(old_rel.name)
-    candidates = []
-    for item in files:
-        name = str(item.get("name", ""))
-        norm = _normalize_relpath_for_match(name)
-        if norm == wanted or norm.endswith("/" + wanted):
-            candidates.append(name)
-        elif norm.endswith("/" + wanted_name):
-            candidates.append(name)
+    destination = _normalize_relpath_for_match(new_rel.as_posix())
 
-    if not candidates:
-        raise RuntimeError(f"HTTP 409 / Fichier introuvable (oldPath={old_rel.as_posix()})")
-    if len(candidates) > 1:
-        exact = [c for c in candidates if _normalize_relpath_for_match(c) == wanted]
+    if any(_normalize_relpath_for_match(name) == destination for name in names):
+        logger.info("Rename already applied: hash=%s old=%s new=%s", info_hash, old_rel, new_rel)
+        return
+
+    candidates = []
+    for name in names:
+        norm = _normalize_relpath_for_match(name)
+        if norm == wanted or norm.endswith("/" + wanted) or norm.endswith("/" + wanted_name):
+            candidates.append(name)
+    picked = old_rel.as_posix()
+    if candidates:
+        exact = [name for name in candidates if _normalize_relpath_for_match(name) == wanted]
         picked = exact[0] if exact else sorted(candidates, key=len)[-1]
-    else:
-        picked = candidates[0]
-    await qbit.rename_file(info_hash, Path(picked), new_rel)
+
+    try:
+        await qbit.rename_file(info_hash, Path(picked), new_rel)
+        return
+    except QbitApiError as error:
+        if error.status != 409:
+            raise
+        refreshed_torrent = await qbit.get_torrent_by_hash(info_hash)
+        refreshed_files = await qbit.list_files(info_hash)
+        logger.error(
+            "qBittorrent rename conflict: hash=%s old=%s resolved_old=%s new=%s state=%s "
+            "save_path=%s content_path=%s files=%s response=%r",
+            info_hash, old_rel, picked, new_rel,
+            (refreshed_torrent or torrent or {}).get("state", "missing"),
+            (refreshed_torrent or torrent or {}).get("save_path", ""),
+            (refreshed_torrent or torrent or {}).get("content_path", ""),
+            [item.get("name", "") for item in refreshed_files], error.response,
+        )
+        raise RuntimeError(
+            f"Conflit qBittorrent pendant le renommage (HTTP 409, hash={info_hash}, "
+            f"old={old_rel.as_posix()}, new={new_rel.as_posix()}, réponse={error.response!r})"
+        ) from error
+
+
+async def move_torrent_and_wait(info_hash: str, destination: Path, timeout: float = 300.0) -> dict:
+    """Move only after renames, then wait until qBittorrent exposes stable fresh paths."""
+    await qbit.set_location(info_hash, destination)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last: dict | None = None
+    destination_norm = os.path.normcase(os.path.normpath(str(destination)))
+    while loop.time() < deadline:
+        last = await qbit.get_torrent_by_hash(info_hash)
+        if not last:
+            raise RuntimeError(f"Torrent disparu pendant le déplacement: {info_hash}")
+        state = str(last.get("state", ""))
+        save_path = os.path.normcase(os.path.normpath(str(last.get("save_path", ""))))
+        content_path = os.path.normcase(os.path.normpath(str(last.get("content_path", ""))))
+        moving = "moving" in state.lower()
+        if not moving and (save_path == destination_norm or content_path == destination_norm or content_path.startswith(destination_norm + os.sep)):
+            await qbit.list_files(info_hash)  # force a final authoritative refresh
+            logger.info("Torrent move completed: hash=%s destination=%s state=%s", info_hash, destination, state)
+            return last
+        await asyncio.sleep(1)
+    raise TimeoutError(
+        f"Déplacement qBittorrent non confirmé après {timeout:.0f}s: hash={info_hash}, "
+        f"destination={destination}, dernier_état={last!r}"
+    )
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -1073,8 +1178,6 @@ async def import_series(torrent: dict, content_root: Path, move_logs: List[str] 
     base_root = pick_storage_root(PLEX_SERIES_PATHS, required_bytes)
     target_root = base_root / show
     ensure_dir(target_root)
-    await qbit.set_location(info_hash, target_root)
-    logger.info("Series target location set via qBittorrent: %s", target_root)
 
     moved = 0
     season_counts: Dict[int, int] = {}
@@ -1090,9 +1193,13 @@ async def import_series(torrent: dict, content_root: Path, move_logs: List[str] 
         use_episode = forced_episode if (series_mode == "single" and forced_episode > 0) else ep
         season_dir = Path(f"S{use_season:02d}")
         new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
-        new_rel = unique_rel_path(target_root, season_dir / new_filename)
-        ensure_dir(target_root / new_rel.parent)
+        desired_rel = season_dir / new_filename
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        new_rel = desired_rel if _normalize_relpath_for_match(rel_old.as_posix()) == _normalize_relpath_for_match(desired_rel.as_posix()) else unique_rel_path(target_root, desired_rel)
+        # qBittorrent renomme encore dans son emplacement actuel. Le dossier
+        # relatif doit donc exister avant le déplacement global.
+        if content_root.is_dir():
+            ensure_dir(content_root / new_rel.parent)
         await rename_file_resilient(info_hash, rel_old, new_rel)
         moved += 1
         if move_logs is not None:
@@ -1115,16 +1222,20 @@ async def import_series(torrent: dict, content_root: Path, move_logs: List[str] 
         use_episode = forced_episode if (series_mode == "single" and forced_episode > 0) else ep_counter
         season_dir = Path(f"S{use_season:02d}")
         new_filename = f"{show} - S{use_season:02d}E{use_episode:02d}{f.suffix.lower()}"
-        new_rel = unique_rel_path(target_root, season_dir / new_filename)
-        ensure_dir(target_root / new_rel.parent)
+        desired_rel = season_dir / new_filename
         rel_old = f.relative_to(content_root) if content_root.is_dir() else Path(f.name)
+        new_rel = desired_rel if _normalize_relpath_for_match(rel_old.as_posix()) == _normalize_relpath_for_match(desired_rel.as_posix()) else unique_rel_path(target_root, desired_rel)
+        if content_root.is_dir():
+            ensure_dir(content_root / new_rel.parent)
         await rename_file_resilient(info_hash, rel_old, new_rel)
         moved += 1
         ep_counter += 1
         if move_logs is not None:
             move_logs.append(f"{target_root / rel_old} → {target_root / new_rel}")
 
-    logger.info("Import series completed: show=%s moved=%s", show, moved)
+    await move_torrent_and_wait(info_hash, target_root)
+    torrent.update(await qbit.get_torrent_by_hash(info_hash) or {})
+    logger.info("Import series completed after verified move: show=%s moved=%s destination=%s", show, moved, target_root)
     return show, moved, target_root
 
 async def import_movie(torrent: dict, content_root: Path, move_logs: List[str] | None = None, prefs: ImportPrefs | None = None) -> Tuple[str, Path]:
@@ -1155,13 +1266,14 @@ async def import_movie(torrent: dict, content_root: Path, move_logs: List[str] |
     base_root = pick_storage_root(PLEX_MOVIES_PATHS, required_bytes)
     movie_dir = base_root / display
     ensure_dir(movie_dir)
-    await qbit.set_location(info_hash, movie_dir)
-    logger.info("Movie target location set via qBittorrent: %s", movie_dir)
 
     new_filename = f"{display}{video.suffix.lower()}"
     rel_old = video.relative_to(content_root) if content_root.is_dir() else Path(video.name)
-    new_rel = unique_rel_path(movie_dir, Path(new_filename))
+    desired_rel = Path(new_filename)
+    new_rel = desired_rel if _normalize_relpath_for_match(rel_old.as_posix()) == _normalize_relpath_for_match(desired_rel.as_posix()) else unique_rel_path(movie_dir, desired_rel)
     await rename_file_resilient(info_hash, rel_old, new_rel)
+    await move_torrent_and_wait(info_hash, movie_dir)
+    torrent.update(await qbit.get_torrent_by_hash(info_hash) or {})
     new_path = movie_dir / new_rel
 
     if move_logs is not None:
@@ -1332,16 +1444,16 @@ class RssSelect(discord.ui.Select):
                 remember_tracked_torrent(h, interaction.user, self.prefs)
                 label = found.get("name") or item.get("title", "torrent")
                 if self.track:
-                    asyncio.create_task(track_download_progress(interaction, h, label))
+                    await start_download_tracking(interaction, h, label)
                 else:
-                    asyncio.create_task(auto_import_when_complete(interaction, h, label))
+                    spawn_background(auto_import_when_complete(interaction, h, label), name=f"auto-import:{h[:12]}")
             else:
                 logger.warning(
                     "No matching torrent hash found right after add, scheduling broad fallback auto-import. title=%s category=%s",
                     item.get("title", ""),
                     self.category,
                 )
-                asyncio.create_task(auto_import_latest_for_user(interaction, interaction.user.id, self.category, self.prefs, item.get("title", "torrent")))
+                spawn_background(auto_import_latest_for_user(interaction, interaction.user.id, self.category, self.prefs, item.get("title", "torrent")), name=f"resolve-import:{interaction.user.id}")
         except Exception:
             logger.exception("Failed to track torrent after RSS add")
 
@@ -1441,11 +1553,49 @@ async def send_torznab_results(
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-async def track_download_progress(interaction: discord.Interaction, info_hash: str, label: str):
+async def create_progress_message(interaction: discord.Interaction, label: str) -> discord.Message | None:
+    """Create a bot-authored message, never an expiring interaction webhook message."""
+    channel = interaction.channel
+    if not isinstance(channel, discord.abc.Messageable):
+        logger.error("Cannot create persistent progress message: interaction has no messageable channel")
+        return None
+    try:
+        return await channel.send(f"📥 Suivi de `{label}`…")
+    except discord.HTTPException:
+        logger.exception("Unable to create persistent progress message for %s", label)
+        return None
+
+
+async def safe_edit_progress(message: discord.Message | None, *, content: str) -> bool:
+    if message is None:
+        return False
+    try:
+        await message.edit(content=content)
+        return True
+    except (discord.NotFound, discord.Forbidden):
+        logger.warning("Progress message unavailable (channel=%s message=%s)", message.channel.id, message.id)
+    except discord.HTTPException:
+        logger.exception("Unable to edit progress message %s", message.id)
+    return False
+
+
+async def start_download_tracking(interaction: discord.Interaction, info_hash: str, label: str) -> None:
+    message = await create_progress_message(interaction, label)
+    spawn_background(
+        track_download_progress(interaction, info_hash, label, message),
+        name=f"download:{info_hash[:12]}",
+    )
+
+
+async def track_download_progress(
+    interaction: discord.Interaction,
+    info_hash: str,
+    label: str,
+    message: discord.Message | None,
+):
     """
-    Suit le téléchargement et met à jour un message ephemeral.
+    Suit le téléchargement via un discord.Message authentifié par le bot.
     """
-    message = await interaction.followup.send(f"📥 Suivi de `{label}`…", ephemeral=True)
     logger.info("Tracking download started: hash=%s label=%s user=%s", info_hash, label, interaction.user.id)
     elapsed = 0
     while elapsed < TRACKING_MAX_SECONDS:
@@ -1453,11 +1603,11 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
             info = await qbit.get_torrent_by_hash(info_hash)
         except Exception as e:
             logger.exception("Tracking download failed for hash=%s", info_hash)
-            await message.edit(content=f"⚠️ Suivi interrompu: {e}")
+            await safe_edit_progress(message, content=f"⚠️ Suivi interrompu: {e}")
             return
 
         if not info:
-            await message.edit(content="⚠️ Torrent introuvable pour le suivi.")
+            await safe_edit_progress(message, content="⚠️ Torrent introuvable pour le suivi.")
             return
 
         progress = int(info.get("progress", 0.0) * 100)
@@ -1467,10 +1617,10 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
 
         eta_str = "?" if eta is None or eta < 0 else f"{eta // 60} min"
         content = f"📥 `{label}` — {progress}% — état: {state} — ↓ {speed // 1024} KiB/s — ETA {eta_str}"
-        await message.edit(content=content)
+        await safe_edit_progress(message, content=content)
 
         if progress >= 100 or state.lower().startswith("stalledup") or state.lower().startswith("upload"):
-            await message.edit(content=f"✅ `{label}` terminé ({progress}%, état {state}).")
+            await safe_edit_progress(message, content=f"✅ `{label}` terminé ({progress}%, état {state}).")
             await handle_auto_import(interaction, info_hash, label)
             return
         if elapsed < 10 * 60:
@@ -1482,7 +1632,7 @@ async def track_download_progress(interaction: discord.Interaction, info_hash: s
         await asyncio.sleep(sleep_s)
         elapsed += sleep_s
 
-    await message.edit(content="⚠️ Suivi arrêté après délai — dernier état affiché.")
+    await safe_edit_progress(message, content="⚠️ Suivi arrêté après délai — dernier état affiché.")
 
 
 async def auto_import_when_complete(interaction: discord.Interaction, info_hash: str, label: str):
@@ -1728,7 +1878,7 @@ async def process_direct_torrent_import(
         h = found["hash"]
         remember_tracked_torrent(h, interaction.user, prefs)
         label = found.get("name") or prefs.get("target_name", "torrent")
-        asyncio.create_task(track_download_progress(interaction, h, label))
+        await start_download_tracking(interaction, h, label)
     else:
         await interaction.followup.send("⚠️ Torrent ajouté mais hash non résolu pour le suivi auto.", ephemeral=True)
 
@@ -1832,10 +1982,16 @@ class TorrentQualitySelect(discord.ui.Select):
 async def setup_hook():
     load_known_users()
     await qbit.start()
+    # Synchroniser aussi le scope global supprime les anciennes commandes qui
+    # n'existent plus localement (notamment l'ancien /import).
+    global_synced = await bot.tree.sync()
     guild = discord.Object(id=GUILD_ID)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
-    logger.info("Synced %s command(s) to guild %s: %s", len(synced), GUILD_ID, [c.name for c in synced])
+    logger.info(
+        "Synced commands globally=%s and guild=%s (%s): %s",
+        len(global_synced), len(synced), GUILD_ID, [c.name for c in synced],
+    )
 
 
 
@@ -2097,6 +2253,21 @@ async def info_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(prefix + text, ephemeral=True)
 
 
+async def send_long_running_result(interaction: discord.Interaction, *args, **kwargs) -> bool:
+    """Send late results through the bot channel, independently of interaction expiry."""
+    kwargs.pop("ephemeral", None)
+    channel = interaction.channel
+    if not isinstance(channel, discord.abc.Messageable):
+        logger.error("Cannot send long-running result: no messageable channel")
+        return False
+    try:
+        await channel.send(*args, **kwargs)
+        return True
+    except discord.HTTPException:
+        logger.exception("Unable to send long-running result to channel")
+        return False
+
+
 async def handle_auto_import(interaction: discord.Interaction, info_hash: str, label: str):
     logger.info("Auto-import requested for hash=%s label=%s by %s", info_hash, label, interaction.user.id)
     try:
@@ -2107,25 +2278,25 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
             ch = bot.get_channel(ALERT_CHANNEL_ID)
             if ch and hasattr(ch, "send"):
                 await ch.send(f"🚨 Stockage plein pour `{label}` ({info_hash[:8]}): {e}")
-        await interaction.followup.send(f"❌ Import bloqué: {e}", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Import bloqué: {e}")
         return
     except Exception as e:
         logger.exception("Auto-import failed while fetching torrent")
-        await interaction.followup.send(f"❌ Impossible de récupérer le torrent `{label}` : {e}", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Impossible de récupérer le torrent `{label}` : {e}")
         return
 
     if not torrent:
-        await interaction.followup.send(f"❌ Torrent `{label}` introuvable dans qBittorrent.", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Torrent `{label}` introuvable dans qBittorrent.")
         return
 
     ok, reason = check_user_ownership(info_hash, interaction.user.id)
     if not ok:
-        await interaction.followup.send(f"❌ Import refusé pour `{label}` : {reason}.", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Import refusé pour `{label}` : {reason}.")
         return
 
     progress = float(torrent.get("progress", 0.0))
     if progress < 1.0:
-        await interaction.followup.send(f"⏳ `{label}` n'est pas encore terminé ({int(progress * 100)}%).", ephemeral=True)
+        await send_long_running_result(interaction, f"⏳ `{label}` n'est pas encore terminé ({int(progress * 100)}%).")
         return
 
     prefs = get_tracked_prefs(info_hash)
@@ -2138,11 +2309,11 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
             ch = bot.get_channel(ALERT_CHANNEL_ID)
             if ch and hasattr(ch, "send"):
                 await ch.send(f"🚨 Stockage plein pour `{label}` ({info_hash[:8]}): {e}")
-        await interaction.followup.send(f"❌ Import bloqué: {e}", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Import bloqué: {e}")
         return
     except Exception as e:
         logger.exception("Auto-import failed while importing torrent")
-        await interaction.followup.send(f"❌ Import échoué pour `{label}` : {e}", ephemeral=True)
+        await send_long_running_result(interaction, f"❌ Import échoué pour `{label}` : {e}")
         return
 
     imported_torrents.add(info_hash)
@@ -2169,13 +2340,11 @@ async def handle_auto_import(interaction: discord.Interaction, info_hash: str, l
     if refresh_lines:
         embed.add_field(name="🔄 Plex", value=clamp_embed_field_lines(refresh_lines), inline=False)
 
-    try:
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except discord.HTTPException:
-        logger.exception("Embed send failed for auto-import summary, sending compact fallback")
-        await interaction.followup.send(
+    if not await send_long_running_result(interaction, embed=embed):
+        logger.warning("Embed send failed for auto-import summary, sending compact fallback")
+        await send_long_running_result(
+            interaction,
             f"✅ Import terminé pour `{label}`\n{msg}\nFichiers déplacés: {moved_files}",
-            ephemeral=True,
         )
 
     # Message public dans le salon où la recherche a été lancée, pour prévenir tous les membres.
