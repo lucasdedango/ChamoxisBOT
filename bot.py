@@ -71,14 +71,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("chamoxisbot")
 
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)(?P<key>authorization)(?P<sep>\s*[=:]\s*)(?:bearer\s+)?(?P<value>[^&\s,;]+)"
+)
 _SECRET_RE = re.compile(
-    r"(?i)(?P<key>apikey|api_key|token|password|passwd|authorization)(?P<sep>\s*[=:]\s*|%3[dD])(?P<value>[^&\s,;]+)"
+    r"(?i)(?P<key>apikey|api_key|token|password|passwd)(?P<sep>\s*[=:]\s*|%3[dD])(?P<value>[^&\s,;]+)"
 )
 
 
 def redact_sensitive(value: object) -> object:
     """Return a log-safe copy while preserving useful URL/request context."""
     if isinstance(value, str):
+        value = _AUTHORIZATION_RE.sub(
+            lambda m: f"{m.group('key')}{m.group('sep')}***REDACTED***", value
+        )
         return _SECRET_RE.sub(lambda m: f"{m.group('key')}{m.group('sep')}***REDACTED***", value)
     if isinstance(value, Mapping):
         return {
@@ -159,7 +165,6 @@ EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
 KNOWN_USERS_DB = Path("known_users.json")
 known_users: set[int] = set()
-TRACKING_MAX_SECONDS = 2 * 60 * 60  # 2h
 _background_tasks: set[asyncio.Task] = set()
 
 
@@ -550,6 +555,18 @@ def _normalize_relpath_for_match(path_like: str) -> str:
     return p
 
 
+def _qbit_destination_path(authoritative_old: str, requested_old: Path, requested_new: Path) -> Path:
+    """Keep qBittorrent's root prefix when the filesystem-relative path omitted it."""
+    old_parts = [part for part in requested_old.as_posix().split("/") if part not in {"", "."}]
+    authoritative_parts = [part for part in authoritative_old.replace("\\", "/").split("/") if part]
+    if old_parts and len(authoritative_parts) > len(old_parts):
+        tail = authoritative_parts[-len(old_parts):]
+        if [part.lower() for part in tail] == [part.lower() for part in old_parts]:
+            prefix = authoritative_parts[:-len(old_parts)]
+            return Path(*prefix, *requested_new.as_posix().split("/"))
+    return requested_new
+
+
 async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
     """
     Renomme avec un état frais et rend une reprise après import partiel idempotente.
@@ -564,7 +581,11 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
     wanted_name = _normalize_relpath_for_match(old_rel.name)
     destination = _normalize_relpath_for_match(new_rel.as_posix())
 
-    if any(_normalize_relpath_for_match(name) == destination for name in names):
+    if any(
+        _normalize_relpath_for_match(name) == destination
+        or _normalize_relpath_for_match(name).endswith("/" + destination)
+        for name in names
+    ):
         logger.info("Rename already applied: hash=%s old=%s new=%s", info_hash, old_rel, new_rel)
         return
 
@@ -578,8 +599,9 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
         exact = [name for name in candidates if _normalize_relpath_for_match(name) == wanted]
         picked = exact[0] if exact else sorted(candidates, key=len)[-1]
 
+    qbit_new_rel = _qbit_destination_path(picked, old_rel, new_rel)
     try:
-        await qbit.rename_file(info_hash, Path(picked), new_rel)
+        await qbit.rename_file(info_hash, Path(picked), qbit_new_rel)
         return
     except QbitApiError as error:
         if error.status != 409:
@@ -589,7 +611,7 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
         logger.error(
             "qBittorrent rename conflict: hash=%s old=%s resolved_old=%s new=%s state=%s "
             "save_path=%s content_path=%s files=%s response=%r",
-            info_hash, old_rel, picked, new_rel,
+            info_hash, old_rel, picked, qbit_new_rel,
             (refreshed_torrent or torrent or {}).get("state", "missing"),
             (refreshed_torrent or torrent or {}).get("save_path", ""),
             (refreshed_torrent or torrent or {}).get("content_path", ""),
@@ -1598,13 +1620,17 @@ async def track_download_progress(
     """
     logger.info("Tracking download started: hash=%s label=%s user=%s", info_hash, label, interaction.user.id)
     elapsed = 0
-    while elapsed < TRACKING_MAX_SECONDS:
+    while True:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.exception("Tracking download failed for hash=%s", info_hash)
-            await safe_edit_progress(message, content=f"⚠️ Suivi interrompu: {e}")
-            return
+            logger.exception("Temporary tracking poll failure for hash=%s; retrying", info_hash)
+            await safe_edit_progress(message, content=f"⚠️ Erreur temporaire de suivi: {e} — nouvelle tentative.")
+            await asyncio.sleep(60)
+            elapsed += 60
+            continue
 
         if not info:
             await safe_edit_progress(message, content="⚠️ Torrent introuvable pour le suivi.")
@@ -1632,20 +1658,21 @@ async def track_download_progress(
         await asyncio.sleep(sleep_s)
         elapsed += sleep_s
 
-    await safe_edit_progress(message, content="⚠️ Suivi arrêté après délai — dernier état affiché.")
-
-
 async def auto_import_when_complete(interaction: discord.Interaction, info_hash: str, label: str):
     """
     Version silencieuse: attend la fin du torrent puis lance l'import auto.
     """
     elapsed = 0
-    while elapsed < TRACKING_MAX_SECONDS:
+    while True:
         try:
             info = await qbit.get_torrent_by_hash(info_hash)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.exception("Silent auto-import polling failed for hash=%s", info_hash)
-            return
+            logger.exception("Temporary silent auto-import poll failure for hash=%s; retrying", info_hash)
+            await asyncio.sleep(60)
+            elapsed += 60
+            continue
         if not info:
             return
         progress = float(info.get("progress", 0.0))
@@ -2394,6 +2421,11 @@ async def main():
         await bot.start(DISCORD_TOKEN)
     finally:
         logger.info("Stopping bot...")
+        tasks = list(_background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await qbit.close()
 
 if __name__ == "__main__":

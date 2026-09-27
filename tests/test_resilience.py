@@ -25,8 +25,30 @@ class RedactionTests(unittest.TestCase):
             {"Authorization": "***REDACTED***", "query": "Silo"},
         )
 
+    def test_redacts_complete_bearer_authorization_header(self):
+        redacted = bot.redact_sensitive("Authorization: Bearer abc123")
+        self.assertEqual(redacted, "Authorization: ***REDACTED***")
+        self.assertNotIn("abc123", redacted)
+
 
 class RenameTests(unittest.IsolatedAsyncioTestCase):
+    async def test_single_root_folder_keeps_authoritative_qbit_prefix(self):
+        fake = AsyncMock()
+        fake.get_torrent_by_hash.return_value = {
+            "save_path": r"D:\downloads",
+            "content_path": r"D:\downloads\Release.Name",
+        }
+        fake.list_files.return_value = [{"name": "Release.Name/episode.mkv"}]
+        with patch.object(bot, "qbit", fake):
+            await bot.rename_file_resilient(
+                "abc", Path("episode.mkv"), Path("Show - S01E01.mkv")
+            )
+        fake.rename_file.assert_awaited_once_with(
+            "abc",
+            Path("Release.Name/episode.mkv"),
+            Path("Release.Name/Show - S01E01.mkv"),
+        )
+
     async def test_already_renamed_is_idempotent(self):
         fake = AsyncMock()
         fake.get_torrent_by_hash.return_value = {"state": "uploading"}
@@ -93,6 +115,22 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertTrue(task.done())
         self.assertIn("test-failure", "\n".join(logs.output))
+
+
+class TrackingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_temporary_qbit_error_does_not_stop_tracking(self):
+        fake_qbit = AsyncMock()
+        fake_qbit.get_torrent_by_hash.side_effect = [ConnectionError("offline"), None]
+        interaction = AsyncMock()
+        interaction.user.id = 42
+        with patch.object(bot, "qbit", fake_qbit), patch.object(
+            bot.asyncio, "sleep", AsyncMock()
+        ) as sleep, patch.object(bot, "safe_edit_progress", AsyncMock()) as edit:
+            await bot.track_download_progress(interaction, "abc", "Release", None)
+
+        self.assertEqual(fake_qbit.get_torrent_by_hash.await_count, 2)
+        sleep.assert_awaited_once_with(60)
+        self.assertIn("nouvelle tentative", edit.await_args_list[0].kwargs["content"])
 
 
 if __name__ == "__main__":
