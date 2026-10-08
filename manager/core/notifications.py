@@ -16,6 +16,8 @@ def allowed_channel(channel_id):
 def notification_text(event):
     data = event.get("data", {})
     kind = event["type"]
+    if kind == "service.changed" and os.getenv("DISCORD_SERVICE_NOTIFICATIONS", "false").strip().lower() != "true":
+        return None
     if kind == "notification.requested":
         return redact(str(data.get("text", "")))[:1800]
     templates = {
