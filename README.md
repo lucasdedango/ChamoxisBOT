@@ -2,6 +2,28 @@
 
 Bot Discord pour rechercher des torrents via **Prowlarr (Torznab)**, ajouter les téléchargements dans qBittorrent, puis importer vers Plex.
 
+Le nouveau lancement utilise deux applications indépendantes : `manager/` pour Discord,
+les événements, la supervision et Ollama ; `modules/plex/` pour les recherches,
+téléchargements et imports. Elles communiquent par API HTTP authentifiée.
+
+- [Installation et démarrage Windows](docs/windows.md)
+- [Architecture, API et événements](docs/architecture.md)
+- [Bilan de migration et limites](docs/migration.md)
+
+Exemple de nouvelle commande : `/plex demande texte:Ajoute Dune de 2021 en français en 1080p`.
+L’IA propose une interprétation, l’utilisateur lance la recherche, sélectionne un résultat,
+puis confirme explicitement l’ajout. Les commandes historiques restent disponibles.
+
+Tests automatisés, depuis la racine du dépôt, avec Python 3.12 :
+
+```bash
+python -m pip install -c constraints.txt -r manager/requirements.txt -r modules/plex/requirements.txt -r tests/requirements.txt
+python -m unittest discover -s tests -v
+```
+
+Les sections suivantes décrivent le lancement historique `bot.py`, conservé pour
+le retour arrière. Ne pas lancer ce bot en parallèle du gestionnaire central.
+
 ## Prérequis
 - Python 3.10+
 - Bot Discord

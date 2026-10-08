@@ -4,3 +4,11 @@ __pycache__/
 *.log
 logs.txt
 known_users.json
+.venv*/
+data/
+logs/
+config/services.json
+manager/.env
+modules/plex/.env
+*.sqlite3*
+*.lock
