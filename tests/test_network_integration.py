@@ -55,8 +55,8 @@ class NetworkIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"message": {"content": '{"title":"Dune","year":2021,"language":"français","quality":"1080p"}'}})
 
         async def torznab(request):
-            self.assertEqual(request.query["q"], "Dune 2021")
-            return web.Response(text='<rss><channel><item><title>Dune.2021.FRENCH.1080p</title><enclosure url="http://test.invalid/dune.torrent" length="12345"/></item></channel></rss>', content_type="application/xml")
+            self.assertEqual(request.query["q"], "Dune")
+            return web.Response(text='<rss><channel><item><title>Dune.1984.ENGLISH.720p</title><enclosure url="http://test.invalid/other.torrent" length="99999"/></item><item><title>Dune.2021.FRENCH.1080p</title><enclosure url="http://test.invalid/dune.torrent" length="12345"/></item></channel></rss>', content_type="application/xml")
 
         fake.router.add_get("/api/tags", tags)
         fake.router.add_post("/api/chat", chat)
@@ -85,8 +85,12 @@ class NetworkIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     plex = APIClient(plex_url, "test-plex-key")
                     analysis = await manager.request("POST", "/ai/analyze", json={"text": "Ajoute Dune 2021 en français en 1080p"})
                     self.assertEqual(analysis["intent"]["year"], 2021)
-                    results = await plex.request("POST", "/search", json={"query": "Dune 2021", "indexer": "1", "language": "français", "quality": "1080p"})
-                    self.assertEqual(len(results["items"]), 1)
+                    results = await plex.request("POST", "/search", json={"query": "Dune", "indexer": "1", "language": "français", "quality": "1080p", "year": 2021, "rank_preferences": True})
+                    self.assertEqual(len(results["items"]), 2)
+                    self.assertEqual(results["items"][0]["title"], "Dune.2021.FRENCH.1080p")
+                    self.assertTrue(results["items"][0]["preference_matches"]["year"])
+                    strict = await plex.request("POST", "/search", json={"query": "Dune", "indexer": "1", "language": "français", "quality": "1080p"})
+                    self.assertEqual(len(strict["items"]), 1)
                     task_data = await plex.request("POST", "/downloads", json={
                         "request_id": "loopback-request", "link": results["items"][0]["enclosure"],
                         "title": results["items"][0]["title"], "user_id": 42, "channel_id": 123,

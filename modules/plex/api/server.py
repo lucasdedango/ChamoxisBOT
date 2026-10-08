@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import hashlib
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -11,6 +12,9 @@ from chamoxis_common.security import require_key
 from chamoxis_common.store import Conflict, Store
 from modules.plex.core.downloads import Downloads
 from modules.plex.bridge import deliver_events
+from modules.plex.core.search import rank_results, language_matches
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(engine=None, store=None, background=True):
@@ -81,16 +85,19 @@ def create_app(engine=None, store=None, background=True):
                 items.extend(engine.parse_rss_feed(xml, body.limit, engine.indexer_label(idx)))
             except Exception:
                 errors.append({"indexer": idx, "error": "Search failed; inspect module logs"})
-        items = [i for i in items if not engine.is_av1_title(i.get("title", "")) and
-                 engine.quality_matches(i.get("title", ""), body.quality)]
-        if body.language:
-            word = body.language.lower()
-            aliases = {"français": ["french", "multi", "vff", "vfi", "vf"], "fr": ["french", "multi", "vff", "vfi", "vf"],
-                       "french": ["french", "multi", "vff", "vfi", "vf"]}
-            import re
-            tokens = aliases.get(word, [word])
-            items = [i for i in items if any(re.search(r"\b" + re.escape(t) + r"\b", i.get("title", "").lower()) for t in tokens)]
-        items.sort(key=lambda i: engine.parse_size_bytes(i.get("size", "")), reverse=True)
+        received = len(items)
+        items = [i for i in items if not engine.is_av1_title(i.get("title", ""))]
+        compatible = len(items)
+        if body.rank_preferences:
+            items = rank_results(items, body.query, year=body.year, quality=body.quality, language=body.language,
+                                 season=body.season, episode=body.episode)
+        else:
+            items = [i for i in items if engine.quality_matches(i.get("title", ""), body.quality)]
+            if body.language:
+                items = [i for i in items if language_matches(i.get("title", ""), body.language)]
+            items.sort(key=lambda i: engine.parse_size_bytes(i.get("size", "")), reverse=True)
+        logger.info("Search results received=%s compatible=%s retained=%s ranking=%s indexer_errors=%s",
+                    received, compatible, len(items), body.rank_preferences, len(errors))
         return {"items": public_results(items[:body.limit]), "errors": errors}
 
     @app.get("/rss")

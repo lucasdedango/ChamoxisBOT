@@ -1,5 +1,46 @@
 """Historical search operations extracted without changing their behavior."""
 from modules.plex.config import *
+import unicodedata
+
+
+def language_matches(title, language):
+    word = language.lower()
+    aliases = {"français": ["french", "multi", "vff", "vfi", "vf"],
+               "francais": ["french", "multi", "vff", "vfi", "vf"],
+               "fr": ["french", "multi", "vff", "vfi", "vf"],
+               "french": ["french", "multi", "vff", "vfi", "vf"],
+               "anglais": ["english", "eng", "multi"], "en": ["english", "eng", "multi"]}
+    return any(re.search(r"\b" + re.escape(t) + r"\b", title.lower()) for t in aliases.get(word, [word]))
+
+
+def rank_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0):
+    """Rank broad search results using explicit preferences, never remove alternatives."""
+    def tokens(value):
+        return set(re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()))
+    wanted = tokens(query)
+    ranked = []
+    for original in items:
+        item = dict(original)
+        title = item.get("title", "")
+        score = 30 * len(wanted & tokens(title)) / max(len(wanted), 1)
+        years = {int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", title)}
+        match_year = (year in years if years else None) if year else None
+        match_quality = quality_matches(title, quality) if quality else None
+        match_language = language_matches(title, language) if language else None
+        episodes = re.findall(r"(?:S(\d{1,2})(?:E(\d{1,3}))?|(\d{1,2})x(\d{1,3}))", title, re.I)
+        numbers = [(int(s or s2), int(e or e2 or 0)) for s, e, s2, e2 in episodes]
+        match_season = any(s == season for s, _ in numbers) if season and numbers else None
+        match_episode = any(s == season and e == episode for s, e in numbers) if episode and numbers else None
+        score += 100 if match_year is True else -100 if match_year is False else 0
+        score += 15 if match_season is True else -15 if match_season is False else 0
+        score += 15 if match_episode is True else -15 if match_episode is False else 0
+        score += 10 if match_quality else 0
+        score += 10 if match_language else 0
+        item["preference_matches"] = {"year": match_year, "quality": match_quality, "language": match_language,
+                                      "season": match_season, "episode": match_episode}
+        ranked.append((score, parse_size_bytes(item.get("seeders", "")), item))
+    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [row[2] for row in ranked]
 
 def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []

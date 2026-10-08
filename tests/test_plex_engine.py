@@ -12,6 +12,27 @@ from modules.plex.core import engine
 
 
 class ExtractedEngineTests(unittest.IsolatedAsyncioTestCase):
+    def test_broad_ranking_keeps_alternatives_and_prefers_requested_edition(self):
+        from modules.plex.core.search import rank_results
+        items = [{"title": "Charlie.et.la.Chocolaterie.1971.FRENCH.1080p", "seeders": "100"},
+                 {"title": "Charlie.et.la.Chocolaterie.2005.ENGLISH.720p", "seeders": "50"},
+                 {"title": "Charlie.et.la.Chocolaterie.2005.MULTI.1080p", "seeders": "5"}]
+        ranked = rank_results(items, "Charlie et la Chocolaterie", year=2005, quality="1080p", language="français")
+        self.assertEqual(len(ranked), 3)
+        self.assertEqual(ranked[0]["title"], items[2]["title"])
+        self.assertEqual(ranked[-1]["title"], items[0]["title"])
+        self.assertNotIn("preference_matches", items[0])
+
+    def test_no_exact_quality_match_still_returns_results(self):
+        from modules.plex.core.search import rank_results
+        items = [{"title": "Dune.2021.720p"}, {"title": "Dune.2021.2160p"}]
+        self.assertEqual(len(rank_results(items, "Dune", year=2021, quality="1080p", language="français")), 2)
+
+    def test_series_episode_preferences_rank_after_broad_search(self):
+        from modules.plex.core.search import rank_results
+        items = [{"title": "Andor.S01E01.1080p"}, {"title": "Andor.S02E01.1080p"}]
+        self.assertEqual(rank_results(items, "Andor", season=2, episode=1)[0]["title"], items[1]["title"])
+
     async def test_qbit_authoritative_prefix_preserved(self):
         fake = AsyncMock()
         fake.get_torrent_by_hash.return_value = {"save_path": r"D:\downloads", "content_path": r"D:\downloads\Release.Name"}

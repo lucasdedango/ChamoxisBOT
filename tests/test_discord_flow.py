@@ -59,9 +59,22 @@ class DiscordFlowTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(request=AsyncMock(return_value={"matches": []}))
         with patch("manager.discord.commands.plex.plex_client", return_value=client), patch.object(ui, "send_torznab_results", AsyncMock()) as search:
             await view.search.callback(fake)
-        self.assertEqual(search.await_args.args[1], "Andor 2022 S02E01")
+        self.assertEqual(search.await_args.args[1], "Andor")
         self.assertEqual(search.await_args.kwargs["language"], "français")
         self.assertEqual(search.await_args.kwargs["prefs"]["episode"], 1)
+        self.assertEqual(search.await_args.kwargs["prefs"]["target_name"], "Andor (2022)")
+        self.assertTrue(search.await_args.kwargs["rank_preferences"])
+        self.assertEqual(search.await_args.kwargs["year"], 2022)
+
+    async def test_natural_movie_uses_title_only_for_indexer_query(self):
+        intent = {"title": "Charlie et la Chocolaterie", "year": 2005, "kind": "movies", "quality": "1080p",
+                  "language": "français", "season": 0, "episode": 0}
+        client = SimpleNamespace(request=AsyncMock(return_value={"matches": []}))
+        with patch("manager.discord.commands.plex.plex_client", return_value=client), patch.object(ui, "send_torznab_results", AsyncMock()) as search:
+            await NaturalRequest(42, intent).search.callback(interaction())
+        self.assertEqual(search.await_args.args[1], "Charlie et la Chocolaterie")
+        self.assertEqual(search.await_args.kwargs["year"], 2005)
+        self.assertTrue(search.await_args.kwargs["rank_preferences"])
 
     async def test_tool_registry_requires_permission_confirmation_and_schema(self):
         registry = ToolRegistry()

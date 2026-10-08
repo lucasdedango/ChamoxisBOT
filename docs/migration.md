@@ -73,3 +73,9 @@ confirmation restent obligatoires. Les demandes ambiguës continuent à demander
 une précision. Les erreurs de notification exposent le salon, le statut HTTP
 et le code Discord sans le corps de réponse, et les refus d’accès sont espacés
 d’une minute par salon pour éviter de saturer les logs.
+
+Les demandes naturelles recherchent désormais le titre seul dans Prowlarr.
+L’année, la qualité, la langue et les saisons/épisodes servent à classer les
+résultats reçus, sans éliminer les alternatives faute de correspondance exacte.
+Les critères repérés sont affichés ; le choix et la confirmation restent humains.
+Les commandes de recherche classiques conservent leurs filtres explicites.

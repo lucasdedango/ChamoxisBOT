@@ -72,18 +72,17 @@ class NaturalRequest(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         from manager.discord.bot import send_torznab_results
         intent = self.intent
-        query = intent["title"] + (f" {intent['year']}" if intent.get("year") else "")
-        prefs = {"kind": intent["kind"], "target_name": query, "season": intent["season"],
+        query = intent["title"]
+        target_name = query + (f" ({intent['year']})" if intent.get("year") else "")
+        prefs = {"kind": intent["kind"], "target_name": target_name, "season": intent["season"],
                  "episode": intent["episode"], "series_mode": "single" if intent["episode"] else "complete"}
-        if intent["season"]:
-            query += f" S{intent['season']:02d}"
-        if intent["episode"]:
-            query += f"E{intent['episode']:02d}"
         matches = await plex_client().request("GET", "/library", params={"title": intent["title"], "kind": intent["kind"]})
         if matches["matches"]:
             await interaction.followup.send("Contenus possiblement déjà présents : " + ", ".join(matches["matches"][:10]) + ". Vérifie avant de confirmer l’ajout.", ephemeral=True)
         await send_torznab_results(interaction, query, intent["kind"], prefs=prefs,
-                                   quality=intent.get("quality"), language=intent.get("language"))
+                                   quality=intent.get("quality"), language=intent.get("language"),
+                                   rank_preferences=True, year=intent.get("year"),
+                                   season=intent["season"], episode=intent["episode"])
 
 
 async def demande(interaction: discord.Interaction, texte: str):

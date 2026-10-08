@@ -224,10 +224,15 @@ async def send_torznab_results(
     quality: str | None = None,
     indexer: str = "all",
     language: str | None = None,
+    rank_preferences: bool = False,
+    year: int | None = None,
+    season: int = 0,
+    episode: int = 0,
 ):
     try:
         response = await plex_client().request("POST", "/search", json={
-            "query": query, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS})
+            "query": query, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS,
+            "rank_preferences": rank_preferences, "year": year, "season": season, "episode": episode})
         items = response["items"]
     except Exception:
         await interaction.followup.send("Impossible de contacter le module Plex pour la recherche.", ephemeral=True)
@@ -242,9 +247,13 @@ async def send_torznab_results(
         pop = popularity_badge(item)
         seeds = item.get("seeders", "?") or "?"
         grabs = item.get("grabs", "?") or "?"
+        matches = item.get("preference_matches", {})
+        labels = {"year": "année", "quality": "qualité", "language": "langue probable", "season": "saison", "episode": "épisode"}
+        matched = [label for name, label in labels.items() if matches.get(name) is True]
+        preference_note = " | ✓ " + ", ".join(matched) if matched else ""
         lines.append(
             f"{idx}. {pop} [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`) "
-            f"[S:{seeds} G:{grabs}]"
+            f"[S:{seeds} G:{grabs}]{preference_note}"
         )
 
     selected_indexer_name = "Tous" if indexer == "all" else indexer_label(indexer)
@@ -253,6 +262,8 @@ async def send_torznab_results(
         description="\n".join(lines[:25])[:4096],
     )
     footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
+    if rank_preferences:
+        footer = f"Résultats préférés en premier | Année : {year or 'non précisée'} | Qualité : {quality or 'toutes'} | Langue : {language or 'toutes'} | Alternatives conservées"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)

@@ -37,7 +37,7 @@ pas de valeurs de configuration. Ils restent locaux par défaut.
 | --- | --- |
 | `GET /health` | Santé du module, sans promesse sur les services externes |
 | `GET /config` | Indexers et drapeaux non secrets |
-| `POST /search` | `query`, `indexer`, `quality`, `language`, `limit` ; résultats et erreurs par indexer |
+| `POST /search` | `query`, `indexer`, `quality`, `language`, `limit` ; `rank_preferences`, `year`, `season`, `episode` pour classer une recherche large |
 | `GET /rss` | `url` optionnelle, `limit` ; flux configuré par défaut |
 | `GET /torrents` | Liste qBittorrent, `limit` |
 | `GET /torrents/{hash}` | État qBittorrent, ou null si absent |
