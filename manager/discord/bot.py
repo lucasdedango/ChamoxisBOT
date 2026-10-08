@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from manager.discord.bridge import *
-from manager.core.permissions import allowed_user, administrator
+from manager.core.permissions import allowed_user, administrator, ids
 
 logger = logging.getLogger("chamoxisbot.discord")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
@@ -35,8 +35,15 @@ _background_tasks = set()
 KNOWN_USERS_DB = Path(os.getenv("MANAGER_DATA_DIR", "data/manager")) / "known_users.json"
 KNOWN_USERS_DB.parent.mkdir(parents=True, exist_ok=True)
 intents = discord.Intents.default()
-intents.message_content = False
+intents.message_content = bool(ids("DISCORD_CONVERSATION_CHANNEL_IDS"))
 bot = commands.Bot(command_prefix="!", intents=intents)
+conversation = None
+
+
+@bot.event
+async def on_message(message):
+    if conversation is not None:
+        await conversation.handle(message)
 
 def spawn_background(coro, *, name: str) -> asyncio.Task:
     """Start and retain a task; always consume and log its terminal exception."""

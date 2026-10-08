@@ -32,7 +32,39 @@ Le gestionnaire a besoin du token Discord, de `DISCORD_GUILD_ID`, des identifian
 d’administrateurs et des salons autorisés dans `DISCORD_NOTIFICATION_CHANNEL_IDS`.
 Les administrateurs sont refusés par défaut si leur liste est vide. Une liste
 `DISCORD_ALLOWED_USER_IDS` vide permet l’usage normal par les utilisateurs du bot.
-Le bot conserve uniquement les slash commands, sans Message Content Intent.
+Les slash commands fonctionnent sans Message Content Intent. Le mode
+conversation ci-dessous nécessite son activation explicite.
+
+## Conversations dans un salon
+
+Dans `manager/.env`, renseigner les salons autorisés :
+
+```dotenv
+DISCORD_CONVERSATION_CHANNEL_IDS=123456789012345678
+```
+
+Ajouter ces salons à `DISCORD_NOTIFICATION_CHANNEL_IDS` pour recevoir le suivi.
+Dans Discord Developer Portal → application → **Bot** → **Privileged Gateway
+Intents**, activer **Message Content Intent**, puis redémarrer le gestionnaire.
+Le bot demande cet intent uniquement si des salons conversationnels sont configurés.
+Il doit pouvoir voir le salon et y envoyer des messages.
+
+Dans le salon choisi :
+
+```text
+bot cherche Charlie et la Chocolaterie de 2005 en français en 1080p
+```
+
+Le bot pose éventuellement une question, puis recherche le titre seul et propose
+le résultat le mieux classé. Répondre `oui` pour ajouter ce résultat, `non` pour
+annuler, ou un numéro pour choisir une autre proposition puis la confirmer.
+Chaque utilisateur possède sa conversation dans chaque salon. La confirmation
+expire après cinq minutes et une réponse adressée à un autre message ne confirme
+pas la proposition. Les autres messages ne déclenchent pas de téléchargement.
+Le mode test reste applicable. Le bot réagit aux nouveaux messages et conserve
+uniquement l’état de la conversation en cours ; il ne récupère pas l’historique
+du salon pour l’envoyer à Ollama. Les états expirés sont ignorés puis supprimés
+quand l’utilisateur reparle au bot.
 
 Le module reçoit les identifiants Prowlarr/qBittorrent/Plex. Les chemins
 `PLEX_MOVIES_PATHS` et `PLEX_SERIES_PATHS` doivent être des dossiers existants

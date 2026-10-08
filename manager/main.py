@@ -17,13 +17,19 @@ async def serve():
     bot = None
     if os.getenv("DISCORD_TOKEN"):
         from manager.discord.bot import bot
+        from manager.discord import bot as discord_ui
+        from manager.discord.conversation import Conversation
+        discord_ui.conversation = Conversation(app.state.store)
         from manager.core.notifications import Notifications
         app.state.discord_status = "connecting"
         discord_task = asyncio.create_task(bot.start(os.environ["DISCORD_TOKEN"]), name="discord")
         def discord_done(task):
             if not task.cancelled() and task.exception():
                 app.state.discord_status = "failed"
-                logging.getLogger(__name__).error("Discord connection failed; check token and network configuration")
+                if type(task.exception()).__name__ == "PrivilegedIntentsRequired":
+                    logging.getLogger(__name__).error("Enable Message Content Intent in the Discord Developer Portal for configured conversational channels, or clear DISCORD_CONVERSATION_CHANNEL_IDS")
+                else:
+                    logging.getLogger(__name__).error("Discord connection failed; check token and network configuration")
         discord_task.add_done_callback(discord_done)
         tasks.append(discord_task)
         async def readiness():
