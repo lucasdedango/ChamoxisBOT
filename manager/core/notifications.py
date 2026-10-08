@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 import discord
 from chamoxis_common.logging import redact
 
@@ -50,6 +51,11 @@ class Notifications:
             if not self.bot.is_ready():
                 self.store.retry(event["id"])
                 continue
+            failure_key = f"notification_channel_failure:{channel_id}"
+            retry_at = self.store.get(failure_key, 0)
+            if retry_at > time.time():
+                self.store.retry(event["id"], delay=retry_at - time.time())
+                continue
             try:
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
                 message_key = f"progress_message:{channel_id}:{event.get('task_id')}"
@@ -65,9 +71,16 @@ class Notifications:
                 if event.get("task_id"):
                     self.store.set(message_key, message.id)
                 self.store.delivered(event["id"])
-            except Exception:
-                logger.warning("Discord notification failed for event %s", event["id"])
-                self.store.retry(event["id"])
+            except Exception as error:
+                # Keep credentials/response bodies out of logs, but expose actionable diagnostics.
+                logger.warning("Discord notification failed event=%s channel=%s error=%s http_status=%s discord_code=%s",
+                               event["id"], channel_id, type(error).__name__,
+                               getattr(error, "status", None), getattr(error, "code", None))
+                if isinstance(error, (discord.Forbidden, discord.NotFound)):
+                    self.store.set(failure_key, time.time() + 60)
+                    self.store.retry(event["id"], delay=60)
+                else:
+                    self.store.retry(event["id"])
 
     async def run(self):
         while True:

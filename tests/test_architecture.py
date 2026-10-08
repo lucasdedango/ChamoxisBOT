@@ -16,6 +16,7 @@ from manager.core.service_registry import Service, Registry
 from manager.core.supervisor import Supervisor
 from manager.ai.router import Router, AIUnavailable
 from manager.ai.gateway import Gateway
+from manager.ai.gateway import explicit_movie_request
 from manager.core.permissions import administrator, allowed_user
 from manager.core.notifications import Notifications
 
@@ -283,8 +284,58 @@ class AITests(unittest.IsolatedAsyncioTestCase):
         await Router([remote, local]).generate([])
         local.chat.assert_not_awaited()
 
+    async def test_echoed_clarification_uses_explicit_request_after_retry(self):
+        text = "Ajoute Charlie et la Chocolaterie de 2005 en français en 1080p"
+        backend = self.backend(result=json.dumps({"title": "Charlie et la Chocolaterie", "clarification": text}))
+        result = await Gateway(Router([backend])).analyze(text)
+        self.assertEqual(result["intent"]["title"], "Charlie et la Chocolaterie")
+        self.assertEqual(result["intent"]["year"], 2005)
+        self.assertEqual(result["intent"]["quality"], "1080p")
+        self.assertEqual(result["intent"]["language"], "français")
+        self.assertIsNone(result["intent"]["clarification"])
+        self.assertEqual(backend.chat.await_count, 2)
+
+    async def test_explicit_year_does_not_require_a_model_catalog_lookup(self):
+        backend = self.backend(result=json.dumps({"title": "Charlie et la Chocolaterie", "clarification": "Quelle version souhaites-tu ?"}))
+        result = await Gateway(Router([backend])).analyze("Ajoute Charlie et la Chocolaterie de 2005 en français en 1080p")
+        self.assertIsNone(result["intent"]["clarification"])
+        self.assertEqual(result["intent"]["year"], 2005)
+
+    async def test_real_clarification_for_ambiguous_request_is_preserved(self):
+        backend = self.backend(result=json.dumps({"title": "Dune", "clarification": "Dune de 1984 ou de 2021 ?"}))
+        result = await Gateway(Router([backend])).analyze("Ajoute Dune")
+        self.assertEqual(result["intent"]["clarification"], "Dune de 1984 ou de 2021 ?")
+
+    def test_explicit_parser_is_limited_to_movie_title_with_year(self):
+        self.assertIsNone(explicit_movie_request("Ajoute Dune"))
+        self.assertIsNone(explicit_movie_request("Ajoute la série Andor de 2022"))
+        self.assertIsNone(explicit_movie_request("Supprime Charlie et la Chocolaterie de 2005"))
+        self.assertEqual(explicit_movie_request("Ajoute Dune de 2021 en 1080p").quality, "1080p")
+
 
 class NotificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_permission_error_logs_cause_and_throttles_failed_channel(self):
+        import discord
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DISCORD_NOTIFICATION_CHANNEL_IDS": "123"}):
+            store = Store(Path(tmp) / "state.sqlite3")
+            try:
+                for _ in range(3):
+                    store.event(Event(source="plex", type="torrent.added", channel_id=123))
+                error = discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"),
+                                          {"code": 50013, "message": "Missing Permissions"})
+                channel = SimpleNamespace(send=AsyncMock(side_effect=error))
+                bot = SimpleNamespace(is_ready=lambda: True, get_channel=lambda _: channel)
+                with self.assertLogs("manager.core.notifications", "WARNING") as logs:
+                    await Notifications(store, bot).step()
+                channel.send.assert_awaited_once()
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("channel=123", logs.output[0])
+                self.assertIn("http_status=403", logs.output[0])
+                self.assertIn("discord_code=50013", logs.output[0])
+                self.assertEqual(store.db.execute("SELECT COUNT(*) FROM events WHERE delivered=0").fetchone()[0], 3)
+            finally:
+                store.close()
+
     async def test_delivery_deduplication_and_offline_retention(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DISCORD_NOTIFICATION_CHANNEL_IDS": "123"}):
             store = Store(Path(tmp) / "state.sqlite3")

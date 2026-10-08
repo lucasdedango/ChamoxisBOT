@@ -77,7 +77,9 @@ si le réseau n’est pas privé et maîtrisé.
 Le modèle distant est essayé en premier. L’API `/api/tags` doit contenir le nom
 exact du modèle ; une API répondante sans ce modèle n’est pas considérée prête.
 Une erreur, un timeout ou un JSON invalide déclenche le repli local. Si les deux
-échouent, `/ai/*` renvoie 503 et la recherche Discord classique reste disponible.
+échouent, le chat renvoie 503 et la recherche Discord classique reste disponible.
+Une demande de film avec titre et année explicites peut aussi être interprétée
+par le parseur limité de secours, toujours avec sélection et confirmation.
 
 ## Lancer et vérifier
 

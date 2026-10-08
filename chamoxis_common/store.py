@@ -82,12 +82,12 @@ class Store:
         with self.db:
             self.db.execute("UPDATE events SET delivered=1 WHERE id=?", (event_id,))
 
-    def retry(self, event_id):
+    def retry(self, event_id, delay=None):
         row = self.db.execute("SELECT attempts FROM events WHERE id=?", (event_id,)).fetchone()
         attempts = row[0] + 1
         with self.db:
             self.db.execute("UPDATE events SET attempts=?, next_attempt=? WHERE id=?",
-                            (attempts, time.time() + min(300, 2 ** min(attempts, 8)), event_id))
+                            (attempts, time.time() + (delay if delay is not None else min(300, 2 ** min(attempts, 8))), event_id))
 
     def close(self):
         self.db.close()

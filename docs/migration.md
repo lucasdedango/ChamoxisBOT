@@ -64,3 +64,12 @@ authentifiés et doivent rester privés. Les clés de module donnent accès à l
 API locale : ne les distribuer qu’à des modules de confiance. Une isolation
 par module et un durcissement réseau supplémentaire seront nécessaires pour
 des modules non fiables ou des API exposées hors du PC.
+
+La validation des demandes naturelles refuse désormais une clarification qui
+répète la demande entière. Une nouvelle extraction est tentée ; pour la forme
+explicite `Ajoute <titre> de <année> en français en 1080p`, un parseur limité peut
+reprendre les informations saisies même si l’IA échoue. La recherche et la
+confirmation restent obligatoires. Les demandes ambiguës continuent à demander
+une précision. Les erreurs de notification exposent le salon, le statut HTTP
+et le code Discord sans le corps de réponse, et les refus d’accès sont espacés
+d’une minute par salon pour éviter de saturer les logs.
