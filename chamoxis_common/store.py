@@ -49,8 +49,9 @@ class Store:
     def task(self, task_id):
         return self._task(self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
-    def tasks(self, states=None):
-        rows = self.db.execute("SELECT * FROM tasks ORDER BY updated DESC").fetchall()
+    def tasks(self, states=None, newest_created=False):
+        order = "rowid" if newest_created else "updated"
+        rows = self.db.execute(f"SELECT * FROM tasks ORDER BY {order} DESC").fetchall()
         return [self._task(r) for r in rows if states is None or r["state"] in states]
 
     def transition(self, task_id, state, result=None):

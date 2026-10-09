@@ -13,6 +13,7 @@ from chamoxis_common.store import Conflict, Store
 from modules.plex.core.downloads import Downloads
 from modules.plex.bridge import deliver_events
 from modules.plex.core.search import rank_results, language_matches
+from modules.plex.core.diagnostics import snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,16 @@ def create_app(engine=None, store=None, background=True):
     @app.get("/tasks")
     async def tasks():
         return store.tasks()
+
+    @app.get("/downloads/status")
+    async def download_status(user_id: int = Query(gt=0)):
+        owned = [task for task in store.tasks(newest_created=True) if task["payload"].get("user_id") == user_id]
+        snapshots = []
+        for task in owned[:5]:
+            info_hash = (task.get("result") or {}).get("hash")
+            torrent = await engine.qbit.get_torrent_by_hash(info_hash) if info_hash and task["state"] == "downloading" else None
+            snapshots.append(snapshot(task, torrent))
+        return {"downloads": snapshots}
 
     @app.get("/tasks/{task_id}")
     async def task(task_id: str):

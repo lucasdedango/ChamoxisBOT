@@ -53,6 +53,9 @@ Dans le salon choisi :
 
 ```text
 bot cherche Charlie et la Chocolaterie de 2005 en français en 1080p
+bot, tu peux me trouver Grey’s Anatomy S11 ?
+bot pourquoi mon dernier téléchargement semble bloqué ?
+bot quelle différence entre 720p et 1080p ?
 ```
 
 Le bot pose éventuellement une question, puis recherche le titre seul et propose
@@ -61,10 +64,24 @@ annuler, ou un numéro pour choisir une autre proposition puis la confirmer.
 Chaque utilisateur possède sa conversation dans chaque salon. La confirmation
 expire après cinq minutes et une réponse adressée à un autre message ne confirme
 pas la proposition. Les autres messages ne déclenchent pas de téléchargement.
-Le mode test reste applicable. Le bot réagit aux nouveaux messages et conserve
-uniquement l’état de la conversation en cours ; il ne récupère pas l’historique
-du salon pour l’envoyer à Ollama. Les états expirés sont ignorés puis supprimés
-quand l’utilisateur reparle au bot.
+Le mode test reste applicable. Tous les messages commençant par `bot` (avec ou sans
+virgule) sont interprétés : recherche, état des téléchargements, état des services
+(administrateurs uniquement), ou discussion. Les commandes de suppression, pause
+et redémarrage ne sont pas exécutées par ce mode. Les commandes slash restent disponibles.
+Une précision comme « plutôt en français » peut affiner une proposition en attente;
+la nouvelle proposition demande une nouvelle confirmation. Pour discuter ou poser
+une nouvelle question, commencer le message par `bot`.
+
+Le bot conserve les dix derniers messages de chaque échange adressé au bot,
+pendant trente minutes d'inactivité, séparément par utilisateur et salon. Il ne
+récupère pas l'historique du salon. Ce contexte est envoyé au modèle configuré
+(distant si disponible, sinon local). Les états expirés sont ignorés.
+Les questions sur les téléchargements consultent les cinq dernières demandes créées
+par cet utilisateur via le bot, avec l'état qBittorrent actuel des téléchargements
+en cours. Les torrents ajoutés manuellement ne sont pas attribués à un utilisateur.
+Le diagnostic distingue une observation actuelle d'une cause certaine; il ne
+relance ni ne modifie le téléchargement. Si le modèle ne peut formuler la réponse
+après la consultation, les observations disponibles sont affichées directement.
 
 Le module reçoit les identifiants Prowlarr/qBittorrent/Plex. Les chemins
 `PLEX_MOVIES_PATHS` et `PLEX_SERIES_PATHS` doivent être des dossiers existants

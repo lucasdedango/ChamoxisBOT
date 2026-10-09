@@ -119,3 +119,97 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(self.worker.handle(self.message("oui")), self.worker.handle(self.message("oui", message_id=2001)))
         self.assertEqual(len(self.downloads()), 1)
         self.assertEqual(self.worker.locks, {})
+
+    async def test_natural_series_request_uses_search_and_requires_yes(self):
+        self.intent.update(title="Grey’s Anatomy", kind="series", year=None, season=11)
+        async def request(method, path, **kwargs):
+            if path == "/ai/route":
+                return {"route": {"action": "search", "request": "Grey’s Anatomy saison 11"}}
+            return {"intent": self.intent}
+        self.manager.request.side_effect = request
+        await self.worker.handle(self.message("bot, tu peux me trouver greys anatomy S11?", message_id=100))
+        body = self.plex.request.await_args.kwargs["json"]
+        self.assertEqual(body["query"], "Grey’s Anatomy")
+        self.assertEqual(body["season"], 11)
+        self.assertEqual(self.downloads(), [])
+        await self.worker.handle(self.message("bot oui"))
+        self.assertEqual(self.downloads()[0].kwargs["json"]["prefs"]["season"], 11)
+
+    async def test_chat_is_scoped_and_does_not_execute(self):
+        self.manager.request.side_effect = [
+            {"route": {"action": "chat", "request": "bonjour"}}, {"result": "Bonjour !"},
+            {"route": {"action": "chat", "request": "discussion"}}, {"result": "Oui."},
+            {"route": {"action": "chat", "request": "bonjour"}}, {"result": "Salut."}]
+        await self.worker.handle(self.message("bot bonjour"))
+        await self.worker.handle(self.message("bot tu te rappelles ?", message_id=2001))
+        history = self.manager.request.await_args_list[2].kwargs["json"]["messages"]
+        self.assertIn({"role": "assistant", "content": "Bonjour !"}, history)
+        await self.worker.handle(self.message("bot bonjour", user=43))
+        other = self.manager.request.await_args_list[4].kwargs["json"]["messages"]
+        self.assertEqual(len(other), 1)
+        self.assertEqual(self.plex.request.await_count, 0)
+
+    async def test_download_question_fetches_own_live_facts(self):
+        self.manager.request.side_effect = [
+            {"route": {"action": "downloads", "request": "dernier bloqué"}}, {"result": "Aucun seed connecté."}]
+        self.plex.request.side_effect = None
+        self.plex.request.return_value = {"downloads": [{"title": "Film", "num_seeds": 0, "observation": "Aucun seed connecté"}]}
+        await self.worker.handle(self.message("bot pourquoi mon dernier téléchargement est bloqué ?"))
+        self.assertEqual(self.plex.request.await_args.args, ("GET", "/downloads/status"))
+        self.assertEqual(self.plex.request.await_args.kwargs["params"], {"user_id": 42})
+        prompt = self.manager.request.await_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn('"num_seeds": 0', prompt)
+        self.assertEqual(self.downloads(), [])
+
+    async def test_service_status_keeps_admin_permission(self):
+        self.manager.request.return_value = {"route": {"action": "services", "request": "état serveur"}}
+        await self.worker.handle(self.message("bot le serveur fonctionne ?"))
+        self.assertEqual(self.manager.request.await_count, 1)
+        self.assertIn("administrateurs", self.channel.send.await_args.args[0])
+
+    async def test_unprefixed_messages_without_pending_request_are_ignored(self):
+        await self.worker.handle(self.message("bonjour tout le monde"))
+        await self.worker.handle(self.message("botanique"))
+        self.assertEqual(self.manager.request.await_count, 0)
+
+    async def test_search_refinement_uses_history_and_reconfirms(self):
+        await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        self.manager.request.side_effect = [
+            {"route": {"action": "search", "request": "Charlie de 2005 en français"}}, {"intent": self.intent}]
+        await self.worker.handle(self.message("plutôt en français", message_id=2001))
+        routed = self.manager.request.await_args_list[1].kwargs["json"]["messages"]
+        self.assertTrue(any("Charlie" in m["content"] for m in routed))
+        self.assertEqual(self.downloads(), [])
+
+    async def test_chat_does_not_discard_pending_confirmation(self):
+        await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        self.manager.request.side_effect = [
+            {"route": {"action": "chat", "request": "1080p ?"}}, {"result": "Une résolution."}]
+        await self.worker.handle(self.message("bot c’est quoi 1080p ?"))
+        await self.worker.handle(self.message("oui", message_id=2001))
+        self.assertEqual(len(self.downloads()), 1)
+
+    async def test_download_facts_still_displayed_if_chat_model_fails(self):
+        self.manager.request.side_effect = [
+            {"route": {"action": "downloads", "request": "dernier"}}, TimeoutError()]
+        self.plex.request.side_effect = None
+        self.plex.request.return_value = {"downloads": [{"title": "Film", "observation": "Téléchargement en pause."}]}
+        await self.worker.handle(self.message("bot mon téléchargement ?"))
+        self.assertIn("Téléchargement en pause", self.channel.send.await_args.args[0])
+
+    async def test_expired_history_is_not_sent_to_model(self):
+        self.worker.remember("conversation:1:123:42", "assistant", "Ancienne conversation")
+        self.now = 1801
+        self.manager.request.side_effect = [
+            {"route": {"action": "chat", "request": "salut"}}, {"result": "Salut !"}]
+        await self.worker.handle(self.message("bot salut"))
+        self.assertEqual(len(self.manager.request.await_args_list[0].kwargs["json"]["messages"]), 1)
+
+    async def test_new_search_cannot_replace_uncertain_add(self):
+        await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        self.plex.request.side_effect = TimeoutError()
+        await self.worker.handle(self.message("oui"))
+        calls = self.manager.request.await_count
+        await self.worker.handle(self.message("bot cherche Dune", message_id=2001))
+        self.assertEqual(self.manager.request.await_count, calls)
+        self.assertEqual(len(self.downloads()), 1)

@@ -14,9 +14,10 @@ Exemple de nouvelle commande : `/plex demande texte:Ajoute Dune de 2021 en fran�
 L’IA propose une interprétation, l’utilisateur lance la recherche, sélectionne un résultat,
 puis confirme explicitement l’ajout. Les commandes historiques restent disponibles.
 
-Un mode conversation optionnel permet aussi `bot cherche Charlie et la Chocolaterie
-de 2005`, puis une réponse `oui` à la proposition. Voir le guide Windows pour
-configurer les salons et activer Message Content Intent.
+Le mode conversation optionnel interprète les messages commençant par `bot` :
+`bot, trouve Grey’s Anatomy S11`, `bot pourquoi mon dernier téléchargement est bloqué ?`
+ou une simple discussion. L'ajout nécessite toujours une réponse `oui` à la proposition.
+Voir le guide Windows pour configurer les salons et activer Message Content Intent.
 
 Tests automatisés, depuis la racine du dépôt, avec Python 3.12 :
 

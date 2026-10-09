@@ -78,6 +78,13 @@ def create_app(store=None, registry=None, gateway=None, background=True):
         except AIUnavailable as exc:
             raise HTTPException(503, str(exc)) from exc
 
+    @app.post("/ai/route", dependencies=[Depends(auth)])
+    async def route(body: Chat):
+        try:
+            return await gateway.route(body)
+        except AIUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     @app.post("/events", dependencies=[Depends(auth)])
     async def event(body: Event):
         if body.channel_id and not allowed_channel(body.channel_id):

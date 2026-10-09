@@ -77,6 +77,11 @@ class Analyze(Contract):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class ConversationRoute(Contract):
+    action: Literal["search", "downloads", "services", "chat"]
+    request: str = Field(min_length=1, max_length=1800)
+
+
 class MediaIntent(Contract):
     title: str = Field(min_length=1, max_length=200)
     kind: Literal["movies", "series"] = "movies"
