@@ -7,6 +7,7 @@ from shared.schemas import MediaIntent, ConversationRoute, ChatAnswer
 from manager.ai.ollama_client import OllamaClient
 from manager.ai.router import Router, AIUnavailable
 from manager.ai.tools import ToolRegistry
+from manager.ai.preferences import ground_intent
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class Gateway:
             "downloads pour consulter/expliquer un téléchargement; services pour consulter les services; "
             "chat pour discuter, expliquer un concept ou toute autre demande. "
             "request reformule la demande actuelle en résolvant les références grâce au contexte, "
+            "Si l'utilisateur nomme une œuvre, c'est une nouvelle recherche: ne reprends pas "
+            "l'année, la qualité ou la langue d'une ancienne recherche. Conserve les demandes de seeds. "
             "sans inventer de préférence. Pour search, conserve titre, saison (S11 = saison 11), "
             "épisode, année, langue et qualité indiqués. 'tu peux me trouver Grey’s Anatomy S11' est search. "
             "'pourquoi mon dernier téléchargement est bloqué' est downloads. "
@@ -112,7 +115,7 @@ class Gateway:
                 raise ValueError("Clarification repeats the request")
             if normalized(intent.title) == normalized(text):
                 raise ValueError("Title repeats the complete request")
-            return intent
+            return MediaIntent.model_validate(ground_intent(intent.model_dump(), text))
 
         # One corrective attempt for semantically invalid output, even with a single backend.
         for attempt in range(2):

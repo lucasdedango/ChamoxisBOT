@@ -8,6 +8,7 @@ import discord
 from manager.core.permissions import allowed_user, administrator, ids
 from manager.discord.bridge import manager_client, plex_client
 from shared.schemas import AddTorrent, Preferences, ConversationRoute
+from manager.ai.preferences import ground_intent
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,10 @@ class Conversation:
             if current and current.get("uncertain"):
                 await self.say(message, "L’ajout précédent est incertain. Réponds « oui » pour vérifier la même demande, ou consulte `/plex operations` avant une nouvelle recherche.")
                 return
-            await self.search(message, key, route.request)
+            source = request
+            if current and re.match(r"^(?:plutôt|plutot|en\b|la même|la meme|une autre|avec\b|sans\b|la saison|saison\b)", request, re.I):
+                source = current.get("user_request", current.get("request", "")) + "; précision : " + request
+            await self.search(message, key, route.request, source=source)
             return
         self.remember(key, "user", request)
         if route.action == "services":
@@ -142,7 +146,7 @@ class Conversation:
             if answer in {"oui", "oui merci", "ok", "okay"}:
                 await self.say(message, "Précise le titre ou réponds à ma question ; rien n’a été ajouté.")
                 return
-            request = text if state["phase"] == "title" else state["request"] + "; précision : " + text
+            request = text if state["phase"] == "title" else state.get("user_request", state["request"]) + "; précision : " + text
             await self.search(message, key, request)
             return
         if state["phase"] != "confirm":
@@ -184,7 +188,7 @@ class Conversation:
         self.remember(key, "assistant", f"Demande enregistrée : {task['id']} pour {item['title']}.")
         await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/plex operations`. En mode test, rien ne sera téléchargé.")
 
-    async def search(self, message, key, request):
+    async def search(self, message, key, request, source=None):
         current = self.store.get(key)
         if current and current.get("uncertain"):
             await self.say(message, "L’ajout précédent est incertain ; réponds « oui » pour vérifier cette même demande ou consulte `/plex operations`.")
@@ -195,10 +199,11 @@ class Conversation:
         await self.say(message, "Je prépare la recherche…")
         self.store.set(key, None)
         analysis = await self.manager_factory().request("POST", "/ai/analyze", json={"text": "Ajoute " + request})
-        self.remember(key, "user", "Recherche : " + request)
-        intent = analysis["intent"]
+        source = source or request
+        self.remember(key, "user", "Recherche : " + source)
+        intent = ground_intent(analysis["intent"], source)
         if intent.get("clarification"):
-            self.save(key, {"phase": "clarify", "request": request})
+            self.save(key, {"phase": "clarify", "request": request, "user_request": source})
             await self.say(message, intent["clarification"])
             self.remember(key, "assistant", intent["clarification"])
             return
@@ -208,12 +213,14 @@ class Conversation:
         results = await self.plex_factory().request("POST", "/search", json={
             "query": intent["title"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
-            "rank_preferences": True, "limit": 100})
+            "rank_preferences": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 100})
         if not results["items"]:
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
-                           else "Je n’ai trouvé aucun résultat. Essaie un autre titre avec « bot cherche … ».")
+                           else "Je n’ai trouvé aucun résultat correspondant avec suffisamment de seeds annoncés. Les résultats sans nombre de seeds connu ne sont pas considérés comme disponibles."
+                           if intent.get("min_seeders") else "Je n’ai trouvé aucun résultat correspondant à la saison/épisode demandé ou au titre. Essaie un autre titre avec « bot cherche … ».")
             return
         state = {"phase": "confirm", "items": results["items"][:5], "intent": intent, "prefs": prefs,
+                 "user_request": source,
                  "index": 0, "origin_id": message.id, "request_id": f"conversation:{message.id}:0"}
         await self.propose(message, key, state)
 
@@ -221,12 +228,14 @@ class Conversation:
         selected = state["items"][state["index"]]
         title = discord.utils.escape_markdown(selected["title"][:250])
         lines = [f"Je propose d’ajouter **{title}**.", f"Dossier cible : **{discord.utils.escape_markdown(state['prefs']['target_name'])}**."]
+        seeds = selected.get("seeders")
+        lines.append(f"Seeds annoncés par l’indexer : **{seeds if str(seeds or '').isdigit() else 'inconnus'}**. Ce nombre ne garantit pas une connexion dans qBittorrent.")
         mismatches = [name for name, value in selected.get("preference_matches", {}).items() if value is False]
         labels = {"year": "année", "quality": "qualité", "language": "langue", "season": "saison", "episode": "épisode"}
         if mismatches:
             lines.append("⚠️ Préférences non repérées : " + ", ".join(labels.get(name, name) for name in mismatches) + ". Vérifie le titre proposé.")
         if len(state["items"]) > 1:
-            lines.append("Autres choix :\n" + "\n".join(f"**{i + 1}** — {discord.utils.escape_markdown(item['title'][:160])}"
+            lines.append("Autres choix :\n" + "\n".join(f"**{i + 1}** — {discord.utils.escape_markdown(item['title'][:130])} (seeds : {item.get('seeders') if str(item.get('seeders') or '').isdigit() else 'inconnus'})"
                           for i, item in enumerate(state["items"])))
         lines.append("Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Confirmation valable 5 minutes.")
         proposal = await self.say(message, "\n".join(lines))

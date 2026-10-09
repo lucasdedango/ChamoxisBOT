@@ -57,6 +57,8 @@ class Search(Contract):
     quality: Literal["2160p", "1080p", "720p", "480p"] | None = None
     language: str | None = Field(default=None, max_length=40)
     rank_preferences: bool = False
+    strict_series: bool = False
+    min_seeders: int | None = Field(default=None, ge=1, le=1000000)
     year: int | None = Field(default=None, ge=1888, le=2100)
     season: int = Field(default=0, ge=0, le=100)
     episode: int = Field(default=0, ge=0, le=1000)
@@ -92,6 +94,7 @@ class MediaIntent(Contract):
     year: int | None = Field(default=None, ge=1888, le=2100)
     quality: Literal["2160p", "1080p", "720p", "480p"] | None = None
     language: str | None = Field(default=None, max_length=40)
+    min_seeders: int | None = Field(default=None, ge=1, le=1000000)
     season: int = Field(default=0, ge=0, le=100)
     episode: int = Field(default=0, ge=0, le=1000)
     clarification: str | None = Field(default=None, max_length=500)

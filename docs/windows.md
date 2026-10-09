@@ -54,6 +54,7 @@ Dans le salon choisi :
 ```text
 bot cherche Charlie et la Chocolaterie de 2005 en français en 1080p
 bot, tu peux me trouver Grey’s Anatomy S11 ?
+bot trouve une version de Grey’s Anatomy S11 qui a des seeds
 bot pourquoi mon dernier téléchargement semble bloqué ?
 bot quelle différence entre 720p et 1080p ?
 ```
@@ -71,6 +72,17 @@ et redémarrage ne sont pas exécutées par ce mode. Les commandes slash restent
 Une précision comme « plutôt en français » peut affiner une proposition en attente;
 la nouvelle proposition demande une nouvelle confirmation. Pour discuter ou poser
 une nouvelle question, commencer le message par `bot`.
+
+Une saison demandée conserve seulement les packs identifiés comme cette saison;
+un épisode demandé conserve seulement cet épisode. Les titres sans saison
+identifiable sont écartés dans ces recherches. Année, qualité et langue viennent
+des mots de la demande actuelle; une précision peut reprendre les critères de la
+proposition en attente, mais une nouvelle recherche ne reprend pas les anciens filtres.
+Une demande « avec des seeds » exige au moins un seed annoncé par l'indexer;
+« au moins 5 seeds » exige cinq. Les résultats à zéro ou sans nombre connu sont
+écartés, les résultats restants sont classés par seeds annoncés. Ce nombre est
+affiché avec chaque proposition et ne garantit pas une connexion dans qBittorrent.
+Sans résultat compatible, aucun ajout n'est proposé.
 
 Le bot conserve les dix derniers messages de chaque échange adressé au bot,
 pendant trente minutes d'inactivité, séparément par utilisateur et salon. Il ne

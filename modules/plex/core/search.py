@@ -13,8 +13,19 @@ def language_matches(title, language):
     return any(re.search(r"\b" + re.escape(t) + r"\b", title.lower()) for t in aliases.get(word, [word]))
 
 
-def rank_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0):
-    """Rank broad search results using explicit preferences, never remove alternatives."""
+def seed_count(item):
+    value = str(item.get("seeders", "")).strip()
+    return int(value) if re.fullmatch(r"\d+", value) else None
+
+
+def series_numbers(title):
+    found = re.findall(r"\bS(\d{1,2})(?:E(\d{1,3}))?\b|\b(\d{1,2})x(\d{1,3})\b|\bsaison[ ._-]*(\d{1,2})(?:[ ._-]+episode[ ._-]*(\d{1,3}))?\b", title, re.I)
+    return [(int(s or s2 or french), int(e or e2 or french_ep or 0)) for s, e, s2, e2, french, french_ep in found]
+
+
+def rank_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0,
+                 strict_series=False, min_seeders=None):
+    """Rank broad results, with optional strict season/episode and seed requirements."""
     def tokens(value):
         return set(re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()))
     wanted = tokens(query)
@@ -27,19 +38,27 @@ def rank_results(items, query, *, year=None, quality=None, language=None, season
         match_year = (year in years if years else None) if year else None
         match_quality = quality_matches(title, quality) if quality else None
         match_language = language_matches(title, language) if language else None
-        episodes = re.findall(r"(?:S(\d{1,2})(?:E(\d{1,3}))?|(\d{1,2})x(\d{1,3}))", title, re.I)
-        numbers = [(int(s or s2), int(e or e2 or 0)) for s, e, s2, e2 in episodes]
+        numbers = series_numbers(title)
         match_season = any(s == season for s, _ in numbers) if season and numbers else None
         match_episode = any(s == season and e == episode for s, e in numbers) if episode and numbers else None
+        if strict_series and ((season and match_season is not True) or (episode and match_episode is not True)):
+            continue
+        if strict_series and season and not episode and not any(s == season and e == 0 for s, e in numbers):
+            continue
+        seeds = seed_count(item)
+        if min_seeders is not None and (seeds is None or seeds < min_seeders):
+            continue
         score += 100 if match_year is True else -100 if match_year is False else 0
         score += 15 if match_season is True else -15 if match_season is False else 0
         score += 15 if match_episode is True else -15 if match_episode is False else 0
         score += 10 if match_quality else 0
         score += 10 if match_language else 0
+        if strict_series and season and not episode and any(s == season and e == 0 for s, e in numbers):
+            score += 15  # Prefer a season pack when the user requested the whole season.
         item["preference_matches"] = {"year": match_year, "quality": match_quality, "language": match_language,
                                       "season": match_season, "episode": match_episode}
-        ranked.append((score, parse_size_bytes(item.get("seeders", "")), item))
-    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        ranked.append((score, seeds or 0, item))
+    ranked.sort(key=lambda row: (row[1], row[0]) if min_seeders is not None else (row[0], row[1]), reverse=True)
     return [row[2] for row in ranked]
 
 def parse_rss_feed(xml_text: str, limit: int = 10, source: str | None = None) -> List[Dict[str, str]]:

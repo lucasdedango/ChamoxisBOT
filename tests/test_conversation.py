@@ -213,3 +213,30 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.handle(self.message("bot cherche Dune", message_id=2001))
         self.assertEqual(self.manager.request.await_count, calls)
         self.assertEqual(len(self.downloads()), 1)
+
+    async def test_seed_request_is_grounded_in_original_message_not_route_guesses(self):
+        self.manager.request.side_effect = [
+            {"route": {"action": "search", "request": "Grey’s Anatomy S11 de 2010 en français en 1080p"}},
+            {"intent": {**self.intent, "title": "Grey’s Anatomy", "year": 2010, "season": 11}}]
+        self.items[:] = [{"title": "Grey’s Anatomy S11 Complete", "seeders": "9", "enclosure": "result:first"}]
+        await self.worker.handle(self.message("bot tu pourrais me trouver une version de greys anatomy S11 qui a des seed stp", message_id=100))
+        body = self.plex.request.await_args.kwargs["json"]
+        self.assertIsNone(body["year"])
+        self.assertIsNone(body["quality"])
+        self.assertIsNone(body["language"])
+        self.assertEqual(body["season"], 11)
+        self.assertEqual(body["min_seeders"], 1)
+        self.assertTrue(body["strict_series"])
+        state = self.store.get("conversation:1:123:42")
+        self.assertEqual(state["prefs"]["target_name"], "Grey’s Anatomy")
+        self.assertIn("**9**", self.channel.send.await_args.args[0])
+        self.assertEqual(self.downloads(), [])
+
+    async def test_no_positive_seed_result_does_not_create_proposal(self):
+        self.plex.request.side_effect = None
+        self.plex.request.return_value = {"items": [], "errors": []}
+        await self.worker.handle(self.message("bot cherche Charlie avec des seeds", message_id=100))
+        self.assertIn("seeds annoncés", self.channel.send.await_args.args[0])
+        self.assertIsNone(self.store.get("conversation:1:123:42"))
+        await self.worker.handle(self.message("oui"))
+        self.assertEqual(self.downloads(), [])

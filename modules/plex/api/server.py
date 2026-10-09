@@ -91,7 +91,8 @@ def create_app(engine=None, store=None, background=True):
         compatible = len(items)
         if body.rank_preferences:
             items = rank_results(items, body.query, year=body.year, quality=body.quality, language=body.language,
-                                 season=body.season, episode=body.episode)
+                                 season=body.season, episode=body.episode, strict_series=body.strict_series,
+                                 min_seeders=body.min_seeders)
         else:
             items = [i for i in items if engine.quality_matches(i.get("title", ""), body.quality)]
             if body.language:
@@ -99,7 +100,8 @@ def create_app(engine=None, store=None, background=True):
             items.sort(key=lambda i: engine.parse_size_bytes(i.get("size", "")), reverse=True)
         logger.info("Search results received=%s compatible=%s retained=%s ranking=%s indexer_errors=%s",
                     received, compatible, len(items), body.rank_preferences, len(errors))
-        return {"items": public_results(items[:body.limit]), "errors": errors}
+        return {"items": public_results(items[:body.limit]), "errors": errors,
+                "seeders_required": body.min_seeders}
 
     @app.get("/rss")
     async def rss(url: str | None = None, limit: int = Query(default=10, ge=1, le=100)):
