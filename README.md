@@ -7,8 +7,14 @@ les événements, la supervision et Ollama ; `modules/plex/` pour les recherches
 téléchargements et imports. Elles communiquent par API HTTP authentifiée.
 
 - [Installation et démarrage Windows](docs/windows.md)
+- [Dashboard local et mises à jour par branche](docs/dashboard.md)
 - [Architecture, API et événements](docs/architecture.md)
 - [Bilan de migration et limites](docs/migration.md)
+
+Double-cliquer sur **`dashboard.bat`** pour ouvrir le panneau local sur
+`http://127.0.0.1:8765` : services, téléchargements, recherche, IA, réglages,
+logs et mises à jour GitHub avec choix de branche, aperçu et sauvegarde.
+Il utilise `.venv-manager`; **`start.bat`** lance les deux applications du bot.
 
 Exemple de nouvelle commande : `/plex demande texte:Ajoute Dune de 2021 en français en 1080p`.
 L’IA propose une interprétation, l’utilisateur lance la recherche, sélectionne un résultat,

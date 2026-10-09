@@ -1,5 +1,10 @@
 # Installation Windows
 
+Le panneau d'administration local se lance avec **`dashboard.bat`** après préparation
+des environnements. Voir [le guide du dashboard](dashboard.md) pour la connexion,
+les réglages et les mises à jour GitHub avec choix de branche. **`start.bat`** lance
+le gestionnaire et le module Plex dans deux consoles séparées.
+
 ## Préparer Python et les configurations
 
 Installer Python **3.12** avec le lanceur `py`, Git et Ollama depuis leurs sources
