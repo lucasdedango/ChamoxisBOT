@@ -1,6 +1,7 @@
 import discord
 from shared.schemas import AddTorrent, Preferences
 from manager.discord.bridge import plex_client, manager_client
+from manager.ai.selection import default_quality
 
 
 class ConfirmDownload(discord.ui.View):
@@ -80,9 +81,10 @@ class NaturalRequest(discord.ui.View):
         if matches["matches"]:
             await interaction.followup.send("Contenus possiblement déjà présents : " + ", ".join(matches["matches"][:10]) + ". Vérifie avant de confirmer l’ajout.", ephemeral=True)
         await send_torznab_results(interaction, query, intent["kind"], prefs=prefs,
-                                   quality=intent.get("quality"), language=intent.get("language"),
+                                   quality=intent.get("quality") or default_quality(), language=intent.get("language"),
                                    rank_preferences=True, year=intent.get("year"),
-                                   season=intent["season"], episode=intent["episode"])
+                                   season=intent["season"], episode=intent["episode"],
+                                   selection_policy=True, min_seeders=intent.get("min_seeders"))
 
 
 async def demande(interaction: discord.Interaction, texte: str):
@@ -93,7 +95,7 @@ async def demande(interaction: discord.Interaction, texte: str):
         if intent.get("clarification"):
             await interaction.followup.send(intent["clarification"] + " Relance `/plex demande` avec la précision.", ephemeral=True)
             return
-        description = f"**{intent['title']}** — {intent['kind']} — année {intent.get('year') or '?'} — qualité {intent.get('quality') or 'toutes'} — langue {intent.get('language') or 'toutes'}"
+        description = f"**{intent['title']}** — {intent['kind']} — année {intent.get('year') or '?'} — qualité {intent.get('quality') or default_quality()} — langue {intent.get('language') or 'MULTI préféré'}"
         await interaction.followup.send(description, view=NaturalRequest(interaction.user.id, intent),
                                         ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
     except Exception:

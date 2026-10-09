@@ -12,7 +12,7 @@ from chamoxis_common.security import require_key
 from chamoxis_common.store import Conflict, Store
 from modules.plex.core.downloads import Downloads
 from modules.plex.bridge import deliver_events
-from modules.plex.core.search import rank_results, language_matches
+from modules.plex.core.search import rank_results, language_matches, select_results
 from modules.plex.core.diagnostics import snapshot
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,11 @@ def create_app(engine=None, store=None, background=True):
         received = len(items)
         items = [i for i in items if not engine.is_av1_title(i.get("title", ""))]
         compatible = len(items)
-        if body.rank_preferences:
+        quality_options = []
+        if body.selection_policy:
+            items, quality_options = select_results(items, body.query, year=body.year, quality=body.quality,
+                language=body.language, season=body.season, episode=body.episode, min_seeders=body.min_seeders)
+        elif body.rank_preferences:
             items = rank_results(items, body.query, year=body.year, quality=body.quality, language=body.language,
                                  season=body.season, episode=body.episode, strict_series=body.strict_series,
                                  min_seeders=body.min_seeders)
@@ -101,7 +105,7 @@ def create_app(engine=None, store=None, background=True):
         logger.info("Search results received=%s compatible=%s retained=%s ranking=%s indexer_errors=%s",
                     received, compatible, len(items), body.rank_preferences, len(errors))
         return {"items": public_results(items[:body.limit]), "errors": errors,
-                "seeders_required": body.min_seeders}
+                "seeders_required": body.min_seeders, "quality_options": quality_options}
 
     @app.get("/rss")
     async def rss(url: str | None = None, limit: int = Query(default=10, ge=1, le=100)):

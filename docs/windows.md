@@ -78,11 +78,22 @@ un épisode demandé conserve seulement cet épisode. Les titres sans saison
 identifiable sont écartés dans ces recherches. Année, qualité et langue viennent
 des mots de la demande actuelle; une précision peut reprendre les critères de la
 proposition en attente, mais une nouvelle recherche ne reprend pas les anciens filtres.
-Une demande « avec des seeds » exige au moins un seed annoncé par l'indexer;
-« au moins 5 seeds » exige cinq. Les résultats à zéro ou sans nombre connu sont
-écartés, les résultats restants sont classés par seeds annoncés. Ce nombre est
-affiché avec chaque proposition et ne garantit pas une connexion dans qBittorrent.
-Sans résultat compatible, aucun ajout n'est proposé.
+Les recherches naturelles (`bot …` et `/plex demande`) appliquent ensuite des
+règles fixes : qualité demandée, AV1 exclu, MULTI préféré, seeds positifs préférés
+aux seeds inconnus, puis taille croissante. La préférence MULTI est remplacée par
+la langue explicitement demandée. Les torrents à zéro seed annoncé sont exclus;
+une taille inconnue n'est pas traitée comme une taille nulle. La taille et les seeds
+annoncés apparaissent dans la proposition; ce nombre ne garantit pas une connexion
+dans qBittorrent. Une demande explicite « avec des seeds » ou « au moins 5 seeds »
+reste possible et exclut aussi les seeds inconnus.
+
+Sans qualité précisée, `SEARCH_DEFAULT_QUALITY=1080p` dans `manager/.env` sert de
+valeur par défaut (2160p, 1080p, 720p ou 480p). Si cette qualité n'est pas disponible,
+le bot demande l'accord pour une autre qualité compatible, puis présente un torrent
+à confirmer séparément : le premier « oui » ne lance aucun téléchargement. Avec
+`/plex demande`, les qualités disponibles sont indiquées pour relancer la commande.
+Sans résultat compatible, aucun ajout n'est proposé. Le formulaire historique
+`/recherchetorrent` conserve son tri manuel.
 
 Le bot conserve les dix derniers messages de chaque échange adressé au bot,
 pendant trente minutes d'inactivité, séparément par utilisateur et salon. Il ne

@@ -219,10 +219,11 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             {"route": {"action": "search", "request": "Grey’s Anatomy S11 de 2010 en français en 1080p"}},
             {"intent": {**self.intent, "title": "Grey’s Anatomy", "year": 2010, "season": 11}}]
         self.items[:] = [{"title": "Grey’s Anatomy S11 Complete", "seeders": "9", "enclosure": "result:first"}]
-        await self.worker.handle(self.message("bot tu pourrais me trouver une version de greys anatomy S11 qui a des seed stp", message_id=100))
+        with patch.dict(os.environ, {"SEARCH_DEFAULT_QUALITY": "720p"}):
+            await self.worker.handle(self.message("bot tu pourrais me trouver une version de greys anatomy S11 qui a des seed stp", message_id=100))
         body = self.plex.request.await_args.kwargs["json"]
         self.assertIsNone(body["year"])
-        self.assertIsNone(body["quality"])
+        self.assertEqual(body["quality"], "720p")
         self.assertIsNone(body["language"])
         self.assertEqual(body["season"], 11)
         self.assertEqual(body["min_seeders"], 1)
@@ -240,3 +241,34 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.store.get("conversation:1:123:42"))
         await self.worker.handle(self.message("oui"))
         self.assertEqual(self.downloads(), [])
+
+    async def test_quality_change_requires_separate_add_confirmation(self):
+        self.plex.request.side_effect = [
+            {"items": [], "errors": [], "quality_options": ["720p", "480p"]},
+            {"items": self.items, "errors": []}, {"id": "task-id"}]
+        await self.worker.handle(self.message("bot cherche Charlie de 2005 en 1080p", message_id=100))
+        self.assertEqual(self.store.get("conversation:1:123:42")["phase"], "quality")
+        await self.worker.handle(self.message("oui", message_id=101))
+        self.assertEqual(self.plex.request.await_count, 1)  # Sent before proposal: no consent.
+        await self.worker.handle(self.message("oui", message_id=2000))
+        self.assertEqual(self.plex.request.await_args.kwargs["json"]["quality"], "720p")
+        self.assertEqual(self.downloads(), [])
+        self.assertEqual(self.store.get("conversation:1:123:42")["phase"], "confirm")
+        await self.worker.handle(self.message("oui", message_id=2001))
+        self.assertEqual(len(self.downloads()), 1)
+
+    async def test_quality_offer_can_be_cancelled(self):
+        self.plex.request.side_effect = None
+        self.plex.request.return_value = {"items": [], "errors": [], "quality_options": ["720p"]}
+        await self.worker.handle(self.message("bot cherche Charlie en 1080p", message_id=100))
+        await self.worker.handle(self.message("non"))
+        self.assertIsNone(self.store.get("conversation:1:123:42"))
+        self.assertEqual(self.downloads(), [])
+
+    async def test_default_quality_and_policy_apply_without_explicit_filters(self):
+        with patch.dict(os.environ, {"SEARCH_DEFAULT_QUALITY": "1080p"}):
+            await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        body = self.plex.request.await_args.kwargs["json"]
+        self.assertEqual(body["quality"], "1080p")
+        self.assertTrue(body["selection_policy"])
+        self.assertIsNone(body["min_seeders"])

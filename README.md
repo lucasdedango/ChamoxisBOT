@@ -18,6 +18,10 @@ Le mode conversation optionnel interprète les messages commençant par `bot` :
 `bot, trouve Grey’s Anatomy S11`, `bot pourquoi mon dernier téléchargement est bloqué ?`
 ou une simple discussion. L'ajout nécessite toujours une réponse `oui` à la proposition.
 Voir le guide Windows pour configurer les salons et activer Message Content Intent.
+Les recherches naturelles privilégient MULTI et les seeds positifs, puis le plus
+petit torrent compatible avec la qualité demandée (1080p par défaut). L'AV1 et
+les torrents à zéro seed annoncé sont exclus; un changement de qualité demande
+un accord distinct de la confirmation d'ajout.
 
 Tests automatisés, depuis la racine du dépôt, avec Python 3.12 :
 

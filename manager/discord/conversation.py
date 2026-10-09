@@ -9,6 +9,7 @@ from manager.core.permissions import allowed_user, administrator, ids
 from manager.discord.bridge import manager_client, plex_client
 from shared.schemas import AddTorrent, Preferences, ConversationRoute
 from manager.ai.preferences import ground_intent
+from manager.ai.selection import default_quality
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,8 @@ class Conversation:
             return
         if prefix:
             answer = addressed.casefold().strip(" .!")
-            if not state or answer not in {"oui", "oui merci", "oui ajoute", "oui ajoute le", "confirme", "je confirme", "non", "annule", "annuler", "stop"} and not answer.isdigit():
+            quality_reply = state and state["phase"] == "quality" and answer in state["options"]
+            if not quality_reply and (not state or answer not in {"oui", "oui merci", "oui ajoute", "oui ajoute le", "confirme", "je confirme", "non", "annule", "annuler", "stop"} and not answer.isdigit()):
                 await self.dispatch(message, key, addressed)
                 return
             text = addressed
@@ -141,6 +143,21 @@ class Conversation:
             self.remember(key, "assistant", "Proposition annulée : rien de nouveau n'a été ajouté.")
             note = " Une demande déjà confirmée peut être en cours : consulte `/plex operations`." if state.get("uncertain") else ""
             await self.say(message, "Conversation annulée." + note)
+            return
+        if state["phase"] == "quality":
+            reference = getattr(message, "reference", None)
+            if message.id <= state["proposal_message_id"] or reference and reference.message_id != state["proposal_message_id"]:
+                return
+            chosen = state["suggested"] if answer in {"oui", "oui merci", "confirme", "je confirme"} else answer
+            chosen = chosen + "p" if chosen.isdigit() else chosen
+            if chosen not in state["options"]:
+                await self.say(message, "Réponds avec une qualité disponible : " + ", ".join(state["options"]) + ", ou « non » pour annuler.")
+                return
+            self.store.set(key, None)
+            intent = {**state["intent"], "quality": chosen}
+            source = state["user_request"] + "; précision : en " + chosen
+            self.remember(key, "user", "Changement de qualité accepté : " + chosen)
+            await self.lookup(message, key, intent, source)
             return
         if state["phase"] in {"title", "clarify"}:
             if answer in {"oui", "oui merci", "ok", "okay"}:
@@ -207,17 +224,33 @@ class Conversation:
             await self.say(message, intent["clarification"])
             self.remember(key, "assistant", intent["clarification"])
             return
+        intent["quality"] = intent.get("quality") or default_quality()
+        await self.lookup(message, key, intent, source)
+
+    async def lookup(self, message, key, intent, source):
         prefs = Preferences(kind=intent["kind"], target_name=intent["title"] + (f" ({intent['year']})" if intent.get("year") else ""),
                             season=intent.get("season", 0), episode=intent.get("episode", 0),
                             series_mode="single" if intent.get("episode") else "complete").model_dump()
         results = await self.plex_factory().request("POST", "/search", json={
             "query": intent["title"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
-            "rank_preferences": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 100})
+            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 100})
         if not results["items"]:
+            options = [q for q in results.get("quality_options", []) if q != intent["quality"]]
+            if options:
+                lower = [q for q in options if int(q[:-1]) < int(intent["quality"][:-1])]
+                suggested = max(lower, key=lambda q: int(q[:-1])) if lower else min(options, key=lambda q: int(q[:-1]))
+                prompt = (f"Aucun résultat compatible en **{intent['quality']}**. Qualités disponibles : {', '.join(options)}. "
+                          f"Veux-tu chercher en **{suggested}** ? Réponds « oui », une qualité disponible ou « non ». "
+                          "Cela ne lance aucun téléchargement : je proposerai ensuite un torrent à confirmer.")
+                proposal = await self.say(message, prompt)
+                self.save(key, {"phase": "quality", "intent": intent, "user_request": source, "options": options,
+                                "suggested": suggested, "proposal_message_id": proposal.id})
+                self.remember(key, "assistant", prompt)
+                return
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
                            else "Je n’ai trouvé aucun résultat correspondant avec suffisamment de seeds annoncés. Les résultats sans nombre de seeds connu ne sont pas considérés comme disponibles."
-                           if intent.get("min_seeders") else "Je n’ai trouvé aucun résultat correspondant à la saison/épisode demandé ou au titre. Essaie un autre titre avec « bot cherche … ».")
+                           if intent.get("min_seeders") else "Je n’ai trouvé aucun torrent compatible avec ces critères. Les résultats AV1 ou à zéro seed annoncé sont exclus.")
             return
         state = {"phase": "confirm", "items": results["items"][:5], "intent": intent, "prefs": prefs,
                  "user_request": source,
@@ -228,6 +261,8 @@ class Conversation:
         selected = state["items"][state["index"]]
         title = discord.utils.escape_markdown(selected["title"][:250])
         lines = [f"Je propose d’ajouter **{title}**.", f"Dossier cible : **{discord.utils.escape_markdown(state['prefs']['target_name'])}**."]
+        if selected.get("selection_reason"):
+            lines.append("Choix selon tes règles : " + discord.utils.escape_markdown(selected["selection_reason"][:250]) + ".")
         seeds = selected.get("seeders")
         lines.append(f"Seeds annoncés par l’indexer : **{seeds if str(seeds or '').isdigit() else 'inconnus'}**. Ce nombre ne garantit pas une connexion dans qBittorrent.")
         mismatches = [name for name, value in selected.get("preference_matches", {}).items() if value is False]

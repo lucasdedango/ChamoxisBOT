@@ -235,17 +235,25 @@ async def send_torznab_results(
     year: int | None = None,
     season: int = 0,
     episode: int = 0,
+    selection_policy: bool = False,
+    min_seeders: int | None = None,
 ):
     try:
         response = await plex_client().request("POST", "/search", json={
             "query": query, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS,
-            "rank_preferences": rank_preferences, "year": year, "season": season, "episode": episode})
+            "rank_preferences": rank_preferences, "selection_policy": selection_policy,
+            "strict_series": selection_policy, "min_seeders": min_seeders,
+            "year": year, "season": season, "episode": episode})
         items = response["items"]
     except Exception:
         await interaction.followup.send("Impossible de contacter le module Plex pour la recherche.", ephemeral=True)
         return
     if not items:
-        await interaction.followup.send("Aucun résultat." if not response["errors"] else "La recherche a échoué ; consulte les logs du module Plex.", ephemeral=True)
+        options = response.get("quality_options", [])
+        text = "Aucun résultat." if not response["errors"] else "La recherche a échoué ; consulte les logs du module Plex."
+        if options:
+            text = f"Aucun résultat compatible en {quality}. Qualités disponibles : {', '.join(options)}. Relance `/plex demande` avec la qualité de ton choix."
+        await interaction.followup.send(text, ephemeral=True)
         return
 
     lines = []
@@ -271,6 +279,8 @@ async def send_torznab_results(
     footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
     if rank_preferences:
         footer = f"Résultats préférés en premier | Année : {year or 'non précisée'} | Qualité : {quality or 'toutes'} | Langue : {language or 'toutes'} | Alternatives conservées"
+    if selection_policy:
+        footer = f"Qualité : {quality} | Langue : {language or 'MULTI préféré'} | Seeds positifs préférés | Taille croissante | AV1 et zéro seed exclus"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)
