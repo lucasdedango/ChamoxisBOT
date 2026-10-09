@@ -1,5 +1,8 @@
 """Use advertised Torznab identifiers, then broad French/original title fallbacks."""
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from xml.etree import ElementTree as ET
 from modules.plex.core.search import seed_count
@@ -15,6 +18,7 @@ def parameters(url, **changes):
 async def search_indexer(engine, store, body, indexer):
     base = engine.build_torznab_search_url(body.query, body.limit, indexer)
     urls = []
+    supported = []
     if body.imdb_id or body.tmdb_id:
         category = 'tv-search' if body.media_kind == 'series' else 'movie-search'
         key = 'torznab_caps:' + str(indexer)
@@ -40,7 +44,17 @@ async def search_indexer(engine, store, body, indexer):
             if body.episode and 'ep' in supported:
                 params['ep'] = body.episode
             urls.append(parameters(base, **params))
+    if body.refined and body.tmdb_id and 'tmdbid' in supported:
+        urls.append(parameters(base, t='tvsearch' if body.media_kind == 'series' else 'movie', q='', tmdbid=str(body.tmdb_id)))
     titles = list(dict.fromkeys(q.strip() for q in [body.query, *body.query_aliases] if q.strip()))[:2]
+    if body.refined:
+        targeted = []
+        for title in titles:
+            season = f"S{body.season:02d}" + (f"E{body.episode:02d}" if body.episode else '') if body.season else ''
+            for suffix in (season, str(body.year) if body.year else '', ' '.join(str(v) for v in (body.year, season) if v)):
+                if suffix:
+                    targeted.append(title + ' ' + suffix)
+        titles = list(dict.fromkeys(targeted + titles))[:8]
     urls.extend(engine.build_torznab_search_url(title, body.limit, indexer) for title in titles)
     rows, successes = {}, 0
     for base_url in urls:
@@ -52,6 +66,7 @@ async def search_indexer(engine, store, body, indexer):
                 xml = await engine.fetch_rss(url)
                 items = engine.parse_rss_feed(xml, page_size, engine.indexer_label(indexer))
                 successes += 1
+                logger.info("Indexer page indexer=%s offset=%s requested=%s received=%s refined=%s", indexer, offset, page_size, len(items), body.refined)
                 fresh = False
                 for item in items:
                     ref = item.get('enclosure') or item.get('link') or item.get('title')

@@ -75,6 +75,7 @@ class Search(Contract):
     rank_preferences: bool = False
     selection_policy: bool = False
     prefer_quality: bool = False
+    refined: bool = False
     strict_series: bool = False
     min_seeders: int | None = Field(default=None, ge=1, le=1000000)
     year: int | None = Field(default=None, ge=1888, le=2100)

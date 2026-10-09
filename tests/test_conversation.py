@@ -238,7 +238,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.plex.request.return_value = {"items": [], "errors": []}
         await self.worker.handle(self.message("bot cherche Charlie avec des seeds", message_id=100))
         self.assertIn("aucun torrent compatible", self.channel.send.await_args.args[0].lower())
-        self.assertIsNone(self.store.get("conversation:1:123:42"))
+        self.assertEqual(self.store.get("conversation:1:123:42")["phase"], "retry")
         await self.worker.handle(self.message("oui"))
         self.assertEqual(self.downloads(), [])
 
@@ -328,3 +328,16 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.downloads(), [])
             await self.worker.handle(self.message("oui", message_id=2002))
             self.assertEqual(len(self.downloads()), 1)
+
+    async def test_refine_reuses_identification_and_requires_new_confirmation(self):
+        await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        self.manager.request.reset_mock()
+        await self.worker.handle(self.message("man ce n’est pas le bon", message_id=2001))
+        self.manager.request.assert_not_awaited()
+        self.assertTrue(self.plex.request.await_args.kwargs['json']['refined'])
+        self.assertEqual(self.downloads(), [])
+        state = self.store.get('conversation:1:123:42')
+        await self.worker.handle(self.message('oui', message_id=2002, reference=SimpleNamespace(message_id=1002)))
+        self.assertEqual(self.downloads(), [])
+        await self.worker.handle(self.message('oui', message_id=2003, reference=SimpleNamespace(message_id=state['proposal_message_id'])))
+        self.assertEqual(len(self.downloads()), 1)

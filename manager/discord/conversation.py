@@ -163,6 +163,22 @@ class Conversation:
         if (prefix or state and state["phase"] in {"title", "clarify"}) and library_request(addressed):
             await self.recommend(message, key, addressed)
             return
+        refine = addressed.casefold().strip(" .!?").replace("’", "'") in {"autre recherche", "affine la recherche", "affiner la recherche", "ce n'est pas le bon", "pas le bon", "cherche mieux"}
+        if refine and (prefix or state):
+            if not state or "intent" not in state:
+                await self.say(message, "Refais d’abord une recherche, puis réponds « autre recherche » à la proposition.")
+                return
+            reference = getattr(message, "reference", None)
+            if message.id <= state.get("proposal_message_id", 0) or reference and reference.message_id != state.get("proposal_message_id"):
+                return
+            if state.get("uncertain"):
+                await self.say(message, "L’ajout précédent est incertain. Vérifie cette demande avant de rechercher autre chose.")
+                return
+            await self.say(message, "J’affine avec le titre, l’année, la saison et les identifiants disponibles… Aucun ajout n’est lancé.")
+            intent = {**state["intent"], "refined": True}
+            self.store.set(key, None)
+            await self.lookup(message, key, intent, state["user_request"])
+            return
         if trigger:
             request = trigger[1].strip(' "«»')
             if not request:
@@ -307,7 +323,7 @@ class Conversation:
         results = await self.plex_factory().request("POST", "/search", json={
             "query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
-            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 250, "prefer_quality": intent.get("prefer_quality", False)})
+            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 250, "refined": intent.get("refined", False), "prefer_quality": intent.get("prefer_quality", False)})
         if not results["items"]:
             options = [q for q in results.get("quality_options", []) if q != intent["quality"]]
             if options:
@@ -321,8 +337,9 @@ class Conversation:
                                 "suggested": suggested, "proposal_message_id": proposal.id})
                 self.remember(key, "assistant", prompt)
                 return
+            self.save(key, {"phase": "retry", "intent": intent, "user_request": source, "proposal_message_id": message.id})
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
-                           else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus.")
+                           else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus. Réponds « autre recherche » pour affiner.")
             return
         state = {"phase": "confirm", "items": results["items"][:5], "intent": intent, "prefs": prefs,
                  "user_request": source,
@@ -350,7 +367,7 @@ class Conversation:
         if len(state["items"]) > 1:
             lines.append("Autres choix :\n" + "\n".join(f"**{i + 1}** — {discord.utils.escape_markdown(item['title'][:130])} (seeds : {item.get('seeders') if str(item.get('seeders') or '').isdigit() else 'inconnus'})"
                           for i, item in enumerate(state["items"])))
-        footer = "Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Confirmation valable 5 minutes."
+        footer = "Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Réponds **autre recherche** pour affiner. Confirmation valable 5 minutes."
         proposal = await self.say(message, "\n".join(lines)[:1950 - len(footer) - 1] + "\n" + footer)
         state["proposal_message_id"] = proposal.id
         self.save(key, state)

@@ -52,3 +52,9 @@ Les métadonnées TMDb sont mises en cache 24 heures; l’inventaire Plex deux m
 TMDb nécessite Internet et un jeton valide; Plex doit être accessible depuis le module. Un problème TMDb conserve la recherche par titre et le bot le signale. Les tests automatisés utilisent des services simulés; le fonctionnement avec les comptes et services locaux doit être vérifié après configuration.
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+## Affiner une proposition
+
+Sur Discord, répondre **autre recherche**, **affine la recherche** ou **ce n’est pas le bon** dans les cinq minutes réutilise l’œuvre identifiée et les préférences. Le bot essaie le titre avec saison/épisode, avec année, puis année et saison, ainsi que TMDb si l’indexer annonce ce support. Les doublons sont retirés. Cette recherche peut être plus lente et dépend toujours des résultats exposés par Prowlarr. La nouvelle proposition nécessite sa propre confirmation; une réponse à une ancienne proposition ne la confirme pas. Un ajout dont la confirmation est incertaine bloque cette relance.
+
+Les logs `Indexer page` indiquent offset, nombre demandé et nombre reçu pour diagnostiquer la pagination.

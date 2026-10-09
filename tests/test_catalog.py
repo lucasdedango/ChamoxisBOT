@@ -134,3 +134,19 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('2160p', preferred[1]['selection_reason'])
         strict, _ = select_results(items, 'Below', season=1, quality='1080p')
         self.assertEqual(len(strict), 1)
+
+    async def test_refined_search_finds_targeted_release_and_deduplicates(self):
+        from urllib.parse import parse_qs, urlsplit
+        queries = []
+        async def fetch(url):
+            params = parse_qs(urlsplit(url).query)
+            query = params.get('q', [''])[0]
+            queries.append(query)
+            item = '<item><title>Below.2026.S01.2160p.H265</title><link>http://download/below</link></item>' if query in {'Below S01', 'Below 2026 S01'} else ''
+            return '<rss><channel>'+item+'</channel></rss>'
+        engine = SimpleNamespace(build_torznab_search_url=lambda q, *a: 'http://tracker/?q='+q, fetch_rss=fetch, parse_rss_feed=parse_rss_feed, indexer_label=lambda i:i)
+        rows = await search_indexer(engine, self.store, Search(query='Below', year=2026, season=1, refined=True), '3')
+        self.assertEqual(len(rows), 1)
+        self.assertIn('Below S01', queries)
+        self.assertIn('Below 2026', queries)
+        self.assertIn('Below 2026 S01', queries)
