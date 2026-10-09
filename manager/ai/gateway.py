@@ -3,7 +3,7 @@ import os
 import logging
 import re
 import unicodedata
-from shared.schemas import MediaIntent, ConversationRoute
+from shared.schemas import MediaIntent, ConversationRoute, ChatAnswer
 from manager.ai.ollama_client import OllamaClient
 from manager.ai.router import Router, AIUnavailable
 from manager.ai.tools import ToolRegistry
@@ -52,9 +52,16 @@ class Gateway:
         self.tools = ToolRegistry()
 
     async def chat(self, body):
-        schema = "json" if body.structured else None
-        result = await self.router.generate([m.model_dump() for m in body.messages], schema,
-                                            json.loads if body.structured else None)
+        messages = [m.model_dump() for m in body.messages]
+        if body.structured:
+            return await self.router.generate(messages, "json", json.loads)
+        messages.append({"role": "system", "content":
+            "Retourne uniquement un objet JSON avec le champ answer contenant la réponse finale "
+            "destinée à l'utilisateur, en français et concise. N'inclus aucune analyse, "
+            "délibération, brouillon ou raisonnement interne. /no_think"})
+        result = await self.router.generate(messages, ChatAnswer.model_json_schema(),
+                                            ChatAnswer.model_validate_json)
+        result["result"] = result["result"].answer
         return result
 
     async def route(self, body):

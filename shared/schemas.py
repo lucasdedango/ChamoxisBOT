@@ -73,6 +73,10 @@ class Chat(Contract):
     structured: bool = False
 
 
+class ChatAnswer(Contract):
+    answer: str = Field(min_length=1, max_length=1800)
+
+
 class Analyze(Contract):
     text: str = Field(min_length=1, max_length=2000)
 

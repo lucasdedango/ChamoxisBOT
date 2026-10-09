@@ -1,5 +1,20 @@
 import asyncio
+import re
 import aiohttp
+
+
+def final_content(body):
+    # Some older Qwen/Ollama templates put thinking tags in content even with
+    # think=False. Never use message.thinking or publish an unfinished answer.
+    content = body.get("message", {}).get("content")
+    if body.get("done_reason") == "length":
+        raise ValueError("Ollama response exhausted its generation budget")
+    if not isinstance(content, str):
+        raise ValueError("Ollama returned no content")
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.S | re.I).strip()
+    if re.search(r"</?think\b", content, re.I) or not content:
+        raise ValueError("Ollama returned no complete final answer")
+    return content
 
 
 class OllamaClient:
@@ -20,6 +35,12 @@ class OllamaClient:
             return False
 
     async def chat(self, messages, schema=None):
+        messages = [dict(message) for message in messages]
+        for message in messages:
+            if message["role"] == "system":
+                message["content"] += "\n/no_think"
+        if not any(message["role"] == "system" for message in messages):
+            messages.insert(0, {"role": "system", "content": "/no_think"})
         # Waiting for the semaphore also consumes the request time budget.
         async with asyncio.timeout(self.timeout):
             async with self.lock:
@@ -33,7 +54,4 @@ class OllamaClient:
                         if response.status != 200:
                             raise RuntimeError(f"Ollama HTTP {response.status}")
                         body = await response.json()
-                        content = body.get("message", {}).get("content")
-                        if not isinstance(content, str) or not content.strip():
-                            raise ValueError("Ollama returned no content")
-                        return content
+                        return final_content(body)
