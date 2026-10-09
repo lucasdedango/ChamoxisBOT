@@ -65,7 +65,7 @@ annuler, ou un numéro pour choisir une autre proposition puis la confirmer.
 Chaque utilisateur possède sa conversation dans chaque salon. La confirmation
 expire après cinq minutes et une réponse adressée à un autre message ne confirme
 pas la proposition. Les autres messages ne déclenchent pas de téléchargement.
-Le mode test reste applicable. Tous les messages commençant par `bot` (avec ou sans
+Le mode test reste applicable. Tous les messages commençant par `bot` ou `man` (avec ou sans
 virgule) sont interprétés : recherche, état des téléchargements, état des services
 (administrateurs uniquement), ou discussion. Les commandes de suppression, pause
 et redémarrage ne sont pas exécutées par ce mode. Les commandes slash restent disponibles.

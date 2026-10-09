@@ -272,3 +272,18 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["quality"], "1080p")
         self.assertTrue(body["selection_policy"])
         self.assertIsNone(body["min_seeders"])
+
+    async def test_man_alias_search_and_confirmation(self):
+        await self.worker.handle(self.message("Man, cherche Charlie de 2005", message_id=100))
+        self.assertEqual(self.downloads(), [])
+        self.assertEqual(self.manager.request.await_count, 1)
+        await self.worker.handle(self.message("man oui"))
+        self.assertEqual(len(self.downloads()), 1)
+
+    async def test_man_alias_chat_and_word_boundary(self):
+        self.manager.request.side_effect = [
+            {"route": {"action": "chat", "request": "bonjour"}}, {"result": "Bonjour !"}]
+        await self.worker.handle(self.message("man bonjour"))
+        self.assertEqual(self.channel.send.await_args.args[0], "Bonjour !")
+        await self.worker.handle(self.message("manger du chocolat"))
+        self.assertEqual(self.manager.request.await_count, 2)

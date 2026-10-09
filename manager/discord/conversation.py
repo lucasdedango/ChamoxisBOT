@@ -113,7 +113,7 @@ class Conversation:
 
     async def respond(self, message, key):
         text = message.content.strip()
-        prefix = re.match(r"^bot\b\s*[,!:]?\s*(.*)$", text, re.I | re.S)
+        prefix = re.match(r"^(?:bot|man)\b\s*[,!:]?\s*(.*)$", text, re.I | re.S)
         addressed = prefix[1].strip() if prefix else text
         trigger = re.match(r"^cherche\b\s*[:,]?\s*(.*)$", addressed, re.I | re.S) if prefix else None
         state = self.store.get(key)
