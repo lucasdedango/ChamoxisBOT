@@ -86,7 +86,7 @@ class NaturalRequest(discord.ui.View):
                                    quality=intent.get("quality") or default_quality(), language=intent.get("language"),
                                    rank_preferences=True, year=intent.get("year"),
                                    season=intent["season"], episode=intent["episode"],
-                                   selection_policy=True, min_seeders=intent.get("min_seeders"),
+                                   selection_policy=True, prefer_quality=not bool(intent.get("quality")), min_seeders=intent.get("min_seeders"),
                                    query_aliases=intent.get("query_aliases"), imdb_id=intent.get("imdb_id"), tmdb_id=intent.get("tmdb_id"))
 
 

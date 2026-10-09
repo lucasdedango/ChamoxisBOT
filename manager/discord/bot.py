@@ -17,7 +17,7 @@ logger = logging.getLogger("chamoxisbot.discord")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "369545955252502528"))
 ALERT_CHANNEL_ID = int(os.getenv("ALERT_CHANNEL_ID", "0") or "0")
-MAX_SEARCH_RESULTS = 100
+MAX_SEARCH_RESULTS = 250
 SEASON_SELECT_MAX = 20
 EPISODE_SELECT_MAX = 30
 DISCORD_SELECT_MAX_OPTIONS = 25
@@ -237,6 +237,7 @@ async def send_torznab_results(
     episode: int = 0,
     selection_policy: bool = False,
     min_seeders: int | None = None,
+    prefer_quality: bool = False,
     query_aliases: list[str] | None = None,
     imdb_id: str | None = None,
     tmdb_id: int | None = None,
@@ -245,7 +246,7 @@ async def send_torznab_results(
         response = await plex_client().request("POST", "/search", json={
             "query": query, "query_aliases": query_aliases or [], "imdb_id": imdb_id, "tmdb_id": tmdb_id, "media_kind": kind, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS,
             "rank_preferences": rank_preferences, "selection_policy": selection_policy,
-            "strict_series": selection_policy, "min_seeders": min_seeders,
+            "prefer_quality": prefer_quality, "strict_series": selection_policy, "min_seeders": min_seeders,
             "year": year, "season": season, "episode": episode})
         items = response["items"]
     except Exception:

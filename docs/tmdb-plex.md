@@ -41,7 +41,11 @@ Les recommandations sont classées selon la note renseignée par Plex. Le bot n�
 
 Les indexers sont interrogés largement par titre, sans concaténer qualité/langue/année. Le bot vérifie leurs capacités Torznab avant d’utiliser IMDb/TMDb. Il essaie au plus une recherche par identifiant et deux recherches par titre par indexer, puis retire les doublons. Un identifiant refusé n’empêche pas les recherches par titre.
 
-La sélection conserve la qualité et la saison/épisode demandés, exclut AV1, préfère MULTI, puis la petite taille parmi les résultats disponibles. Les torrents à seeds positifs passent devant ceux à zéro/inconnus. Si aucun candidat n’a de seeds, le bot propose quand même un torrent en prévenant que le téléchargement peut prendre beaucoup de temps, sans garantie d’aboutir. L’ajout exige toujours une confirmation.
+Chaque recherche récupère jusqu’à 250 résultats par indexer, par pages de 100, 100 et 50 lorsque la pagination est prise en charge. Aucun réglage .env supplémentaire n’est nécessaire.
+
+Sans qualité explicite, le 1080p (ou SEARCH_DEFAULT_QUALITY) est préféré et les autres qualités restent proposées en alternatives. Même sans cette ligne .env, la préférence est 1080p. Une qualité explicitement demandée est filtrée strictement; en l’absence de résultat, les autres qualités nécessitent un choix séparé.
+
+La sélection conserve la qualité explicitement demandée et la saison/épisode demandés, exclut AV1, préfère MULTI, puis la petite taille parmi les résultats disponibles. Les torrents à seeds positifs passent devant ceux à zéro/inconnus. Si aucun candidat n’a de seeds, le bot propose quand même un torrent en prévenant que le téléchargement peut prendre beaucoup de temps, sans garantie d’aboutir. L’ajout exige toujours une confirmation.
 
 Les métadonnées TMDb sont mises en cache 24 heures; l’inventaire Plex deux minutes. Le dashboard peut forcer l’actualisation. Chaque section est limitée à 2 000 œuvres par consultation; un avertissement signale l’inventaire partiel. Les filtres de genre utilisent les données de Plex : un genre absent peut empêcher une œuvre d’apparaître. Une erreur Plex est signalée comme indisponibilité, pas comme absence de films.
 

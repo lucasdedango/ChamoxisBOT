@@ -109,3 +109,28 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         chosen, _ = select_results(rows, body.query, season=1, quality='1080p', query_aliases=body.query_aliases)
         self.assertEqual(len(chosen), 1)
         self.assertIn('temps', chosen[0]['availability_warning'])
+
+    async def test_pagination_finds_release_beyond_first_hundred(self):
+        from urllib.parse import parse_qs, urlsplit
+        offsets = []
+        async def fetch(url):
+            params = parse_qs(urlsplit(url).query)
+            offset = int(params['offset'][0])
+            size = int(params['limit'][0])
+            offsets.append((offset, size))
+            rows = ''.join(f'<item><title>{"Below.S01.2160p" if i == 220 else "Other"}</title><link>http://download/{i}</link></item>' for i in range(offset, offset+size))
+            return '<rss><channel>'+rows+'</channel></rss>'
+        engine = SimpleNamespace(build_torznab_search_url=lambda *a: 'http://tracker/?t=search&q=Below', fetch_rss=fetch, parse_rss_feed=parse_rss_feed, indexer_label=lambda i:i)
+        rows = await search_indexer(engine, self.store, Search(query='Below'), '3')
+        self.assertEqual(offsets, [(0, 100), (100, 100), (200, 50)])
+        self.assertEqual(len(rows), 250)
+        self.assertTrue(any(i['title'] == 'Below.S01.2160p' for i in rows))
+
+    def test_default_quality_is_preference_but_explicit_quality_is_strict(self):
+        items = [{'title': f'Below.2026.S01.MULTI.{quality}.H265', 'seeders': '8', 'size': size} for quality, size in [('2160p', '100'), ('1080p', '200')]]
+        preferred, _ = select_results(items, 'Below', season=1, quality='1080p', prefer_quality=True)
+        self.assertEqual(len(preferred), 2)
+        self.assertIn('1080p', preferred[0]['title'])
+        self.assertIn('2160p', preferred[1]['selection_reason'])
+        strict, _ = select_results(items, 'Below', season=1, quality='1080p')
+        self.assertEqual(len(strict), 1)

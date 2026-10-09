@@ -95,7 +95,7 @@ def create_app(engine=None, store=None, background=True):
         quality_options = []
         if body.selection_policy:
             items, quality_options = select_results(items, body.query, year=body.year, quality=body.quality,
-                language=body.language, season=body.season, episode=body.episode, min_seeders=body.min_seeders, query_aliases=body.query_aliases)
+                language=body.language, season=body.season, episode=body.episode, min_seeders=body.min_seeders, query_aliases=body.query_aliases, prefer_quality=body.prefer_quality)
         elif body.rank_preferences:
             items = rank_results(items, body.query, year=body.year, quality=body.quality, language=body.language,
                                  season=body.season, episode=body.episode, strict_series=body.strict_series,

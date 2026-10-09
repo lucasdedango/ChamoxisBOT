@@ -197,6 +197,7 @@ class Conversation:
             chosen = state["choices"][int(answer) - 1]
             media = await self.manager_factory().request("GET", f"/catalog/media/{chosen['kind']}/{chosen['tmdb_id']}")
             intent = identified_intent(state["intent"], media)
+            intent["prefer_quality"] = not bool(intent.get("quality"))
             intent["quality"] = intent.get("quality") or default_quality()
             self.store.set(key, None)
             await self.lookup(message, key, intent, state["user_request"])
@@ -211,7 +212,7 @@ class Conversation:
                 await self.say(message, "Réponds avec une qualité disponible : " + ", ".join(state["options"]) + ", ou « non » pour annuler.")
                 return
             self.store.set(key, None)
-            intent = {**state["intent"], "quality": chosen}
+            intent = {**state["intent"], "quality": chosen, "prefer_quality": False}
             source = state["user_request"] + "; précision : en " + chosen
             self.remember(key, "user", "Changement de qualité accepté : " + chosen)
             await self.lookup(message, key, intent, source)
@@ -295,6 +296,7 @@ class Conversation:
             await self.say(message, intent["clarification"])
             self.remember(key, "assistant", intent["clarification"])
             return
+        intent["prefer_quality"] = not bool(intent.get("quality"))
         intent["quality"] = intent.get("quality") or default_quality()
         await self.lookup(message, key, intent, source)
 
@@ -305,7 +307,7 @@ class Conversation:
         results = await self.plex_factory().request("POST", "/search", json={
             "query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
-            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 100})
+            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 250, "prefer_quality": intent.get("prefer_quality", False)})
         if not results["items"]:
             options = [q for q in results.get("quality_options", []) if q != intent["quality"]]
             if options:

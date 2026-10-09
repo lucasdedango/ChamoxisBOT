@@ -43,18 +43,27 @@ async def search_indexer(engine, store, body, indexer):
     titles = list(dict.fromkeys(q.strip() for q in [body.query, *body.query_aliases] if q.strip()))[:2]
     urls.extend(engine.build_torznab_search_url(title, body.limit, indexer) for title in titles)
     rows, successes = {}, 0
-    for url in urls:
-        try:
-            xml = await engine.fetch_rss(url)
-            items = engine.parse_rss_feed(xml, body.limit, engine.indexer_label(indexer))
-            successes += 1
-            for item in items:
-                ref = item.get('enclosure') or item.get('link') or item.get('title')
-                previous = rows.get(ref)
-                if previous is None or (seed_count(item) or 0) > (seed_count(previous) or 0):
-                    rows[ref] = item
-        except Exception:
-            continue
+    for base_url in urls:
+        seen = set()
+        for offset in (0, 100, 200):
+            page_size = min(100, 250 - offset)
+            url = parameters(base_url, limit=str(page_size), offset=str(offset))
+            try:
+                xml = await engine.fetch_rss(url)
+                items = engine.parse_rss_feed(xml, page_size, engine.indexer_label(indexer))
+                successes += 1
+                fresh = False
+                for item in items:
+                    ref = item.get('enclosure') or item.get('link') or item.get('title')
+                    fresh |= ref not in seen
+                    seen.add(ref)
+                    previous = rows.get(ref)
+                    if previous is None or (seed_count(item) or 0) > (seed_count(previous) or 0):
+                        rows[ref] = item
+                if len(items) < page_size or not fresh:
+                    break  # Finished, or indexer ignored the requested offset.
+            except Exception:
+                break  # Other title/identifier searches can still succeed.
     if not successes:
         raise RuntimeError('Indexer searches failed')
     return list(rows.values())

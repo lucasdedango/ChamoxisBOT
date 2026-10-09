@@ -74,12 +74,13 @@ class Search(Contract):
     language: str | None = Field(default=None, max_length=40)
     rank_preferences: bool = False
     selection_policy: bool = False
+    prefer_quality: bool = False
     strict_series: bool = False
     min_seeders: int | None = Field(default=None, ge=1, le=1000000)
     year: int | None = Field(default=None, ge=1888, le=2100)
     season: int = Field(default=0, ge=0, le=100)
     episode: int = Field(default=0, ge=0, le=1000)
-    limit: int = Field(default=100, ge=1, le=100)
+    limit: int = Field(default=250, ge=1, le=250)
 
 
 class Message(Contract):

@@ -240,7 +240,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         configured = settings.values("manager")
         quality = intent.get("quality") or configured.get("SEARCH_DEFAULT_QUALITY") or default_quality()
         result = await query("plex", "/search", "POST", json={"query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "quality": quality,
-            "language": intent.get("language"), "year": intent.get("year"), "season": intent["season"],
+            "prefer_quality": not bool(intent.get("quality")), "language": intent.get("language"), "year": intent.get("year"), "season": intent["season"],
             "episode": intent["episode"], "min_seeders": intent.get("min_seeders"), "selection_policy": True})
         admins = [v.strip() for v in (configured.get("DISCORD_ADMIN_IDS") or "").split(",") if v.strip().isdigit()]
         user_id = body.user_id or (int(admins[0]) if admins else None)

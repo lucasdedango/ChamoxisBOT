@@ -24,7 +24,7 @@ def title_tokens(value):
     return set(re.findall(r"[a-z0-9]+", value))
 
 
-def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=()):
+def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=(), prefer_quality=False):
     """Deterministic natural-search policy; quality is never silently changed."""
     candidates = rank_results(items, query, year=year, season=season, episode=episode,
                               strict_series=True)
@@ -36,7 +36,7 @@ def select_results(items, query, *, year=None, quality=None, language=None, seas
                   and (not language or language_matches(i.get("title", ""), language))]
     options = [q for q in ("2160p", "1080p", "720p", "480p")
                if any(quality_matches(i.get("title", ""), q) for i in candidates)]
-    selected = [i for i in candidates if quality_matches(i.get("title", ""), quality)]
+    selected = [i for i in candidates if prefer_quality or quality_matches(i.get("title", ""), quality)]
     positive = [i for i in selected if (seed_count(i) or 0) > 0]
     preferred = [i for i in positive if seed_count(i) >= (min_seeders or 1)]
     warning = None
@@ -52,7 +52,7 @@ def select_results(items, query, *, year=None, quality=None, language=None, seas
         multi = bool(re.search(r"\bmulti\b", item.get("title", ""), re.I))
         seeds = seed_count(item)
         size = parse_size_bytes(item.get("size", ""))
-        return (0 if language or multi else 1, 0 if (seeds or 0) > 0 else 1 if seeds is None else 2,
+        return (0 if not prefer_quality or quality_matches(item.get("title", ""), quality) else 1, 0 if language or multi else 1, 0 if (seeds or 0) > 0 else 1 if seeds is None else 2,
                 size if size > 0 else float("inf"), -(seeds or 0), item.get("title", ""))
 
     selected.sort(key=order)
@@ -64,12 +64,13 @@ def select_results(items, query, *, year=None, quality=None, language=None, seas
             "français repéré" if language_matches(title, "français") else
             "anglais repéré" if language_matches(title, "anglais") else "langue non confirmée")
         weight = f"{size / 1024 ** 3:.2f} Gio" if size > 0 else "taille inconnue"
-        item["selection_reason"] = f"{quality or 'qualité non précisée'} · {lang} · {weight} · seeds : {seeds if seeds is not None else 'inconnus'}"
+        actual_quality = next((q for q in ("2160p", "1080p", "720p", "480p") if quality_matches(title, q)), None) if prefer_quality else quality
+        item["selection_reason"] = f"{actual_quality or 'qualité non précisée'} · {lang} · {weight} · seeds : {seeds if seeds is not None else 'inconnus'}"
         if warning:
             item["availability_warning"] = warning
         if year and not re.search(r"\b" + str(year) + r"\b", title):
             item["identity_warning"] = f"L’année {year} n’est pas indiquée dans le titre du torrent; vérifie qu’il s’agit de la bonne œuvre."
-        item["preference_matches"]["quality"] = quality_matches(title, quality) if quality else None
+        item["preference_matches"]["quality"] = quality_matches(title, quality) if quality and not prefer_quality else None
         item["preference_matches"]["language"] = language_matches(title, language) if language else None
     return selected, options
 
