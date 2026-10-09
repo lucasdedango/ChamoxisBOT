@@ -16,6 +16,7 @@ from dashboard.settings import Settings, GROUPS
 from dashboard.updates import Updater
 from manager.ai.selection import default_quality
 from manager.ai.preferences import ground_intent
+from manager.ai.catalog import identified_intent, library_request
 
 
 class Body(BaseModel):
@@ -34,6 +35,8 @@ class ConfigSave(Body):
 class SearchBody(Body):
     text: str = Field(min_length=1, max_length=1800)
     user_id: int | None = Field(default=None, gt=0)
+    media_id: int | None = Field(default=None, gt=0)
+    media_kind: str | None = None
 
 
 class Confirm(Body):
@@ -98,7 +101,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: https://image.tmdb.org; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         return response
 
     async def authenticated(request: Request):
@@ -209,15 +212,34 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         except Exception as error:
             raise HTTPException(409, "Relance refusée : service non géré ou gestionnaire indisponible") from error
 
+    @app.get("/api/library", dependencies=[Depends(authenticated)])
+    async def library(kind: str = "all", genre: str = "", query_text: str = "", refresh: bool = False):
+        return await query("plex", "/catalog/library", params={"kind": kind, "genre": genre, "query": query_text, "limit": 100, "refresh": refresh})
+
     @app.post("/api/search", dependencies=[Depends(authenticated)])
     async def search(body: SearchBody):
         intent = (await query("manager", "/ai/analyze", "POST", json={"text": "Ajoute " + body.text}))["intent"]
         intent = ground_intent(intent, body.text)
+        configured = settings.values("manager")
+        warning = None
+        if configured.get("TMDB_ACCESS_TOKEN"):
+            if body.media_id:
+                if body.media_kind not in {"movies", "series"}:
+                    raise HTTPException(422, "Type d’œuvre invalide")
+                media = await query("manager", f"/catalog/media/{body.media_kind}/{body.media_id}")
+                intent = identified_intent(intent, media)
+            else:
+                catalog = await query("manager", "/catalog/resolve", "POST", json={"query": intent["title"], "kind": intent["kind"], "year": intent.get("year")})
+                warning = catalog.get("warning")
+                if catalog.get("selected"):
+                    intent = identified_intent(intent, catalog["selected"])
+                elif catalog.get("items"):
+                    return {"media_choices": catalog["items"], "items": []}
         if intent.get("clarification"):
             return {"clarification": intent["clarification"], "items": []}
         configured = settings.values("manager")
         quality = intent.get("quality") or configured.get("SEARCH_DEFAULT_QUALITY") or default_quality()
-        result = await query("plex", "/search", "POST", json={"query": intent["title"], "quality": quality,
+        result = await query("plex", "/search", "POST", json={"query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "quality": quality,
             "language": intent.get("language"), "year": intent.get("year"), "season": intent["season"],
             "episode": intent["episode"], "min_seeders": intent.get("min_seeders"), "selection_policy": True})
         admins = [v.strip() for v in (configured.get("DISCORD_ADMIN_IDS") or "").split(",") if v.strip().isdigit()]
@@ -225,12 +247,12 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         items = result["items"][:20]
         proposals.update({k: v for k, v in list(proposals.items()) if v["expires"] > time.time()})
         proposal = secrets.token_urlsafe(24)
-        prefs = Preferences(kind=intent["kind"], target_name=intent["title"] + (f" ({intent['year']})" if intent.get("year") else ""),
+        prefs = Preferences(kind=intent["kind"], target_name=intent["title"].replace("/", " - ").replace("\\", " - ")[:140] + (f" ({intent['year']})" if intent.get("year") else ""),
             season=intent["season"], episode=intent["episode"], series_mode="single" if intent["episode"] else "complete")
         proposals[proposal] = {"items": items, "prefs": prefs, "user_id": user_id, "expires": time.time() + 300}
         # Opaque module refs stay on the server, never trust a browser-provided torrent URL.
         public = [{k: i.get(k) for k in ("title", "size", "seeders", "source", "selection_reason", "availability_warning", "identity_warning")} for i in items]
-        return {"proposal": proposal, "intent": {**intent, "quality": quality}, "items": public,
+        return {"proposal": proposal, "catalog_warning": warning, "media": intent.get("media"), "intent": {**intent, "quality": quality}, "items": public,
                 "quality_options": result.get("quality_options", []), "errors": result.get("errors", []), "user_id": str(user_id) if user_id else None}
 
     @app.post("/api/search/confirm", dependencies=[Depends(authenticated)])
@@ -248,6 +270,11 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
 
     @app.post("/api/chat", dependencies=[Depends(authenticated)])
     async def chat(body: SearchBody):
+        if library_request(body.text):
+            filters = await query("manager", "/ai/library", "POST", json={"text": body.text})
+            result = await query("plex", "/catalog/library", params={**filters, "limit": 8})
+            answer = "Disponibles sur Plex :\n" + "\n".join(i["title"] + (f" ({i['year']})" if i.get("year") else "") + " — " + ", ".join(i["genres"]) for i in result["items"])
+            return {"result": answer if result["items"] else "Aucune œuvre correspondant aux filtres dans les sections Plex consultées.", "model": "Bibliothèque Plex"}
         return await query("manager", "/ai/chat", "POST", json={"messages": [
             {"role": "system", "content": "Assistant Plex : réponds en français. Tu ne disposes d'aucune fonction d'action dans ce chat. Ne prétends pas avoir consulté ou modifié les services."},
             {"role": "user", "content": body.text}]})

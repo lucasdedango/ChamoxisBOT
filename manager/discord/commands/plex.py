@@ -1,4 +1,6 @@
+import os
 import discord
+from manager.ai.catalog import identified_intent
 from shared.schemas import AddTorrent, Preferences
 from manager.discord.bridge import plex_client, manager_client
 from manager.ai.selection import default_quality
@@ -74,7 +76,7 @@ class NaturalRequest(discord.ui.View):
         from manager.discord.bot import send_torznab_results
         intent = self.intent
         query = intent["title"]
-        target_name = query + (f" ({intent['year']})" if intent.get("year") else "")
+        target_name = query.replace("/", " - ").replace("\\", " - ")[:140] + (f" ({intent['year']})" if intent.get("year") else "")
         prefs = {"kind": intent["kind"], "target_name": target_name, "season": intent["season"],
                  "episode": intent["episode"], "series_mode": "single" if intent["episode"] else "complete"}
         matches = await plex_client().request("GET", "/library", params={"title": intent["title"], "kind": intent["kind"]})
@@ -84,7 +86,30 @@ class NaturalRequest(discord.ui.View):
                                    quality=intent.get("quality") or default_quality(), language=intent.get("language"),
                                    rank_preferences=True, year=intent.get("year"),
                                    season=intent["season"], episode=intent["episode"],
-                                   selection_policy=True, min_seeders=intent.get("min_seeders"))
+                                   selection_policy=True, min_seeders=intent.get("min_seeders"),
+                                   query_aliases=intent.get("query_aliases"), imdb_id=intent.get("imdb_id"), tmdb_id=intent.get("tmdb_id"))
+
+
+class IdentifyMedia(NaturalRequest):
+    def __init__(self, owner_id, intent, choices):
+        super().__init__(owner_id, intent)
+        self.clear_items()
+        self.choices = choices
+        select = discord.ui.Select(placeholder="Choisir l’œuvre", options=[discord.SelectOption(label=(item['title'] + ' (' + str(item.get('year') or '?') + ')')[:100], value=str(index), description='Série' if item['kind'] == 'series' else 'Film') for index, item in enumerate(choices)])
+        select.callback = self.choose
+        self.add_item(select)
+        self.select = select
+
+    async def choose(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            selected = self.choices[int(self.select.values[0])]
+            media = await manager_client().request("GET", f"/catalog/media/{selected['kind']}/{selected['tmdb_id']}")
+            intent = identified_intent(self.intent, media)
+            await interaction.edit_original_response(content=f"Œuvre identifiée : **{discord.utils.escape_markdown(media['title'])}** ({media.get('year') or '?'})\n{media['tmdb_url']}", view=NaturalRequest(self.owner_id, intent))
+            self.stop()
+        except Exception:
+            await interaction.followup.send("La fiche TMDb est indisponible; réessaie plus tard.", ephemeral=True)
 
 
 async def demande(interaction: discord.Interaction, texte: str):
@@ -92,6 +117,15 @@ async def demande(interaction: discord.Interaction, texte: str):
     try:
         response = await manager_client().request("POST", "/ai/analyze", json={"text": texte})
         intent = response["intent"]
+        if os.getenv("TMDB_ACCESS_TOKEN") and intent["title"] != "À préciser":
+            catalog = await manager_client().request("POST", "/catalog/resolve", json={"query": intent["title"], "kind": intent["kind"], "year": intent.get("year")})
+            if catalog.get("selected"):
+                intent = identified_intent(intent, catalog["selected"])
+            elif catalog.get("items"):
+                await interaction.followup.send("Plusieurs œuvres sont possibles. Choisis avant de rechercher :", view=IdentifyMedia(interaction.user.id, intent, catalog["items"]), ephemeral=True)
+                return
+            elif catalog.get("warning"):
+                await interaction.followup.send(catalog["warning"] + ". Recherche par titre conservée.", ephemeral=True)
         if intent.get("clarification"):
             await interaction.followup.send(intent["clarification"] + " Relance `/plex demande` avec la précision.", ephemeral=True)
             return

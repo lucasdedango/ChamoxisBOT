@@ -3,9 +3,10 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException
-from shared.schemas import Analyze, Chat, Event, Notification, Registration
+from shared.schemas import Analyze, Chat, Event, Notification, Registration, CatalogResolve
 from chamoxis_common.security import require_key
 from chamoxis_common.store import Store
+from manager.ai.catalog import TMDb, CatalogUnavailable
 from manager.ai.gateway import Gateway
 from manager.ai.router import AIUnavailable
 from manager.core.event_bus import EventBus
@@ -24,6 +25,7 @@ def create_app(store=None, registry=None, gateway=None, background=True):
     registry = registry or Registry.load(os.getenv("SERVICES_CONFIG", "config/services.json"))
     supervisor, gateway = Supervisor(registry, store=store), gateway or Gateway()
     bus = EventBus(store)
+    catalog = TMDb(store)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -63,6 +65,26 @@ def create_app(store=None, registry=None, gateway=None, background=True):
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"status": "starting", "id": service_id}
+
+    @app.post("/catalog/resolve", dependencies=[Depends(auth)])
+    async def resolve(body: CatalogResolve):
+        return await catalog.resolve(body.query, body.kind, body.year)
+
+    @app.get("/catalog/media/{kind}/{media_id}", dependencies=[Depends(auth)])
+    async def media(kind: str, media_id: int):
+        if kind not in {"movies", "series"} or media_id <= 0:
+            raise HTTPException(422, "Invalid media")
+        try:
+            return await catalog.details(kind, media_id)
+        except CatalogUnavailable as error:
+            raise HTTPException(503, str(error)) from error
+
+    @app.post("/ai/library", dependencies=[Depends(auth)])
+    async def library_filters(body: Analyze):
+        try:
+            return await gateway.library(body.text)
+        except AIUnavailable as error:
+            raise HTTPException(503, str(error)) from error
 
     @app.post("/ai/chat", dependencies=[Depends(auth)])
     async def chat(body: Chat):

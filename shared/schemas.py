@@ -1,5 +1,5 @@
 """Versioned wire contracts; no application implementation lives here."""
-from typing import Any, Literal
+from typing import Any, Literal, Annotated
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,8 +51,24 @@ class AddTorrent(Contract):
         return value
 
 
+class CatalogResolve(Contract):
+    query: str = Field(min_length=1, max_length=300)
+    kind: Literal["movies", "series"] = "movies"
+    year: int | None = Field(default=None, ge=1888, le=2100)
+
+
+class LibraryFilter(Contract):
+    kind: Literal["all", "movies", "series"] = "all"
+    genre: str = Field(default="", max_length=100)
+    query: str = Field(default="", max_length=200)
+
+
 class Search(Contract):
     query: str = Field(min_length=1, max_length=300)
+    query_aliases: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(default_factory=list, max_length=4)
+    imdb_id: str | None = Field(default=None, pattern=r"^tt\d+$")
+    tmdb_id: int | None = Field(default=None, gt=0)
+    media_kind: Literal["movies", "series"] | None = None
     indexer: str = Field(default="all", max_length=100)
     quality: Literal["2160p", "1080p", "720p", "480p"] | None = None
     language: str | None = Field(default=None, max_length=40)
@@ -85,7 +101,7 @@ class Analyze(Contract):
 
 
 class ConversationRoute(Contract):
-    action: Literal["search", "downloads", "services", "chat"]
+    action: Literal["search", "library", "downloads", "services", "chat"]
     request: str = Field(min_length=1, max_length=1800)
 
 

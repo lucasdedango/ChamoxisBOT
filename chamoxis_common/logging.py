@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def redact(message):
-    for name in ("DISCORD_TOKEN", "QBIT_PASS", "PROWLARR_API_KEY", "PLEX_TOKEN", "MANAGER_API_KEY", "MANAGER_ADMIN_API_KEY", "PLEX_MODULE_API_KEY"):
+    for name in ("TMDB_ACCESS_TOKEN", "DISCORD_TOKEN", "QBIT_PASS", "PROWLARR_API_KEY", "PLEX_TOKEN", "MANAGER_API_KEY", "MANAGER_ADMIN_API_KEY", "PLEX_MODULE_API_KEY"):
         value = os.getenv(name, "")
         if len(value) >= 6:
             message = message.replace(value, "[redacted]")

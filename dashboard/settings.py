@@ -15,7 +15,7 @@ GROUPS = {
         "DISCORD_NOTIFICATION_CHANNEL_IDS": "ids", "ALERT_CHANNEL_ID": "ids",
         "DISCORD_SERVICE_NOTIFICATIONS": "bool", "SEARCH_DEFAULT_QUALITY": "quality",
         "OLLAMA_LOCAL_URL": "url", "OLLAMA_LOCAL_MODEL": "text", "OLLAMA_REMOTE_URL": "url",
-        "OLLAMA_REMOTE_MODEL": "text", "OLLAMA_CONTEXT": "context",
+        "TMDB_ACCESS_TOKEN": "secret", "TMDB_LANGUAGE": "text", "OLLAMA_REMOTE_MODEL": "text", "OLLAMA_CONTEXT": "context",
         "MANAGER_API_KEY": "secret", "MANAGER_ADMIN_API_KEY": "secret", "PLEX_MODULE_API_KEY": "secret"}},
     "plex": {"path": "modules/plex/.env", "fields": {
         "QBIT_URL": "url", "QBIT_USER": "text", "QBIT_PASS": "secret", "PROWLARR_URL": "url",

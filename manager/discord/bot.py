@@ -237,10 +237,13 @@ async def send_torznab_results(
     episode: int = 0,
     selection_policy: bool = False,
     min_seeders: int | None = None,
+    query_aliases: list[str] | None = None,
+    imdb_id: str | None = None,
+    tmdb_id: int | None = None,
 ):
     try:
         response = await plex_client().request("POST", "/search", json={
-            "query": query, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS,
+            "query": query, "query_aliases": query_aliases or [], "imdb_id": imdb_id, "tmdb_id": tmdb_id, "media_kind": kind, "indexer": indexer, "quality": quality, "language": language, "limit": MAX_SEARCH_RESULTS,
             "rank_preferences": rank_preferences, "selection_policy": selection_policy,
             "strict_series": selection_policy, "min_seeders": min_seeders,
             "year": year, "season": season, "episode": episode})

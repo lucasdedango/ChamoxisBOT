@@ -90,3 +90,7 @@ interaction Discord.
 - Erreur `PROWLARR_API_KEY manquant` : renseigner la variable dans `.env`.
 - 401/403: vérifier URL/API key Prowlarr et accessibilité réseau.
 - Pas de résultats: vérifier l’indexer C411 dans Prowlarr.
+
+### TMDb et recommandations Plex
+
+Voir [la configuration TMDb/Plex](docs/tmdb-plex.md) pour identifier les œuvres, choisir entre homonymes et consulter les films/séries réellement disponibles. TMDb est une API en ligne et ne nécessite aucune installation locale.

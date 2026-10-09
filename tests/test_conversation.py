@@ -298,3 +298,33 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         await self.worker.handle(self.message('oui'))
         self.assertEqual(len(self.downloads()), 1)
         self.assertIn('beaucoup de temps', self.channel.send.await_args.args[0])
+
+
+    async def test_sf_inventory_escapes_old_clarification_without_searching(self):
+        key = "conversation:1:123:42"
+        self.worker.save(key, {"phase": "clarify", "request": "SF", "user_request": "SF"})
+        self.plex.request.side_effect = None
+        self.plex.request.return_value = {"items": [{"title": "The Expanse", "year": 2015, "genres": ["Science-fiction"], "summary": "Une aventure spatiale."}], "truncated": False}
+        await self.worker.handle(self.message("man quelle série de SF est disponible sur le plex ?"))
+        self.manager.request.assert_not_awaited()
+        self.assertEqual(self.plex.request.await_args.args[1], "/catalog/library")
+        self.assertIn("The Expanse", self.channel.send.await_args.args[0])
+        self.assertIsNone(self.store.get(key))
+        self.assertEqual(self.downloads(), [])
+
+    async def test_tmdb_choice_keeps_season_and_requires_distinct_add_confirmation(self):
+        media = {"title": "Charlie", "kind": "series", "year": 2026, "tmdb_id": 123, "imdb_id": "tt123", "aliases": ["Charlie", "Original"], "tmdb_url": "https://www.themoviedb.org/tv/123"}
+        self.manager.request.side_effect = [{"intent": {**self.intent, "kind": "series", "season": 1}}, {"items": [media], "selected": None}, media]
+        with patch.dict(os.environ, {"TMDB_ACCESS_TOKEN": "test-token"}):
+            await self.worker.handle(self.message("bot cherche Charlie saison 1", message_id=100))
+            self.assertEqual(self.plex.request.await_count, 0)
+            await self.worker.handle(self.message("oui"))
+            self.assertEqual(self.plex.request.await_count, 0)
+            await self.worker.handle(self.message("1", message_id=2001))
+            body = self.plex.request.await_args.kwargs["json"]
+            self.assertEqual(body["season"], 1)
+            self.assertEqual(body["imdb_id"], "tt123")
+            self.assertEqual(body["query_aliases"], ["Charlie", "Original"])
+            self.assertEqual(self.downloads(), [])
+            await self.worker.handle(self.message("oui", message_id=2002))
+            self.assertEqual(len(self.downloads()), 1)

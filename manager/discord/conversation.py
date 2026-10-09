@@ -1,4 +1,5 @@
 """Opt-in, per-user conversations with explicit confirmation of a proposed torrent."""
+import os
 import asyncio
 import logging
 import json
@@ -10,6 +11,7 @@ from manager.discord.bridge import manager_client, plex_client
 from shared.schemas import AddTorrent, Preferences, ConversationRoute
 from manager.ai.preferences import ground_intent
 from manager.ai.selection import default_quality
+from manager.ai.catalog import library_request, library_filters, identified_intent
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +37,15 @@ class Conversation:
         if not request or len(request) > 1800:
             await self.say(message, "Écris une demande de moins de 1800 caractères après « bot ».")
             return
+        if library_request(request):
+            await self.recommend(message, key, request)
+            return
         history = self.history(key) + [{"role": "user", "content": request}]
         routed = await self.manager_factory().request("POST", "/ai/route", json={"messages": history})
         route = ConversationRoute.model_validate(routed["route"])
+        if route.action == "library":
+            await self.recommend(message, key, route.request)
+            return
         if route.action == "search":
             current = self.store.get(key)
             if current and current.get("uncertain"):
@@ -86,6 +94,31 @@ class Conversation:
         self.remember(key, "assistant", response)
         await self.say(message, response)
 
+    async def recommend(self, message, key, request):
+        current = self.store.get(key)
+        if not current or not current.get("uncertain"):
+            self.store.set(key, None)
+        filters = library_filters(request)
+        try:
+            if not filters["genre"]:
+                filters = await self.manager_factory().request("POST", "/ai/library", json={"text": request})
+            result = await self.plex_factory().request("GET", "/catalog/library", params={**filters, "limit": 8})
+        except Exception:
+            await self.say(message, "Je ne peux pas consulter la bibliothèque Plex. Vérifie PLEX_URL, PLEX_TOKEN et les identifiants de sections dans modules/plex/.env, puis relance le module Plex.")
+            return
+        lines = ["Voici ce qui est disponible sur Plex" + (" en " + filters["genre"] if filters.get("genre") else "") + " :"]
+        for item in result["items"]:
+            title = discord.utils.escape_markdown(item["title"])
+            lines.append("• **" + title + "**" + (f" ({item['year']})" if item.get("year") else "") + " — " + ", ".join(item.get("genres", [])) + "\n" + discord.utils.escape_markdown(item.get("summary", "")[:130]))
+        if not result["items"]:
+            lines.append("Aucune œuvre correspondant à ces filtres dans les sections consultées. Les genres sont ceux renseignés dans Plex.")
+        if result.get("truncated"):
+            lines.append("Inventaire partiel : certaines œuvres peuvent ne pas apparaître.")
+        response = "\n".join(lines)
+        self.remember(key, "user", request)
+        self.remember(key, "assistant", response)
+        await self.say(message, response)
+
     def save(self, key, state):
         self.store.set(key, {**state, "expires": self.clock() + 300})
 
@@ -120,6 +153,9 @@ class Conversation:
         if state and state.get("expires", 0) < self.clock():
             self.store.set(key, None)
             state = None
+        if (prefix or state and state["phase"] in {"title", "clarify"}) and library_request(addressed):
+            await self.recommend(message, key, addressed)
+            return
         if trigger:
             request = trigger[1].strip(' "«»')
             if not request:
@@ -143,6 +179,20 @@ class Conversation:
             self.remember(key, "assistant", "Proposition annulée : rien de nouveau n'a été ajouté.")
             note = " Une demande déjà confirmée peut être en cours : consulte `/plex operations`." if state.get("uncertain") else ""
             await self.say(message, "Conversation annulée." + note)
+            return
+        if state["phase"] == "identify":
+            reference = getattr(message, "reference", None)
+            if message.id <= state["proposal_message_id"] or reference and reference.message_id != state["proposal_message_id"]:
+                return
+            if not answer.isdigit() or not 1 <= int(answer) <= len(state["choices"]):
+                await self.say(message, "Choisis le numéro de l’œuvre, ou « non » pour annuler. Aucun téléchargement n’est lancé.")
+                return
+            chosen = state["choices"][int(answer) - 1]
+            media = await self.manager_factory().request("GET", f"/catalog/media/{chosen['kind']}/{chosen['tmdb_id']}")
+            intent = identified_intent(state["intent"], media)
+            intent["quality"] = intent.get("quality") or default_quality()
+            self.store.set(key, None)
+            await self.lookup(message, key, intent, state["user_request"])
             return
         if state["phase"] == "quality":
             reference = getattr(message, "reference", None)
@@ -220,6 +270,19 @@ class Conversation:
         source = source or request
         self.remember(key, "user", "Recherche : " + source)
         intent = ground_intent(analysis["intent"], source)
+        if os.getenv("TMDB_ACCESS_TOKEN") and intent["title"] != "À préciser":
+            catalog = await self.manager_factory().request("POST", "/catalog/resolve", json={"query": intent["title"], "kind": intent["kind"], "year": intent.get("year")})
+            if catalog.get("selected"):
+                intent = identified_intent(intent, catalog["selected"])
+            elif catalog.get("items"):
+                lines = ["Quelle œuvre veux-tu ? Réponds avec son numéro :"]
+                for index, item in enumerate(catalog["items"], 1):
+                    lines.append(f"**{index}** — {discord.utils.escape_markdown(item['title'])} ({item.get('year') or 'année inconnue'}) · {'série' if item['kind'] == 'series' else 'film'}")
+                proposal = await self.say(message, "\n".join(lines))
+                self.save(key, {"phase": "identify", "choices": catalog["items"], "intent": intent, "user_request": source, "proposal_message_id": proposal.id})
+                return
+            elif catalog.get("warning"):
+                await self.say(message, catalog["warning"] + ". Je conserve la recherche par titre.")
         if intent.get("clarification"):
             self.save(key, {"phase": "clarify", "request": request, "user_request": source})
             await self.say(message, intent["clarification"])
@@ -229,11 +292,11 @@ class Conversation:
         await self.lookup(message, key, intent, source)
 
     async def lookup(self, message, key, intent, source):
-        prefs = Preferences(kind=intent["kind"], target_name=intent["title"] + (f" ({intent['year']})" if intent.get("year") else ""),
+        prefs = Preferences(kind=intent["kind"], target_name=intent["title"].replace("/", " - ").replace("\\", " - ")[:140] + (f" ({intent['year']})" if intent.get("year") else ""),
                             season=intent.get("season", 0), episode=intent.get("episode", 0),
                             series_mode="single" if intent.get("episode") else "complete").model_dump()
         results = await self.plex_factory().request("POST", "/search", json={
-            "query": intent["title"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
+            "query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
             "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 100})
         if not results["items"]:
@@ -261,6 +324,9 @@ class Conversation:
         selected = state["items"][state["index"]]
         title = discord.utils.escape_markdown(selected["title"][:250])
         lines = [f"Je propose d’ajouter **{title}**.", f"Dossier cible : **{discord.utils.escape_markdown(state['prefs']['target_name'])}**."]
+        media = state["intent"].get("media")
+        if media:
+            lines.append(f"Œuvre identifiée : {discord.utils.escape_markdown(media['title'])} ({media.get('year') or '?'}) · {media['tmdb_url']}")
         if selected.get("selection_reason"):
             lines.append("Choix selon tes règles : " + discord.utils.escape_markdown(selected["selection_reason"][:250]) + ".")
         for warning in ("availability_warning", "identity_warning"):

@@ -24,12 +24,12 @@ def title_tokens(value):
     return set(re.findall(r"[a-z0-9]+", value))
 
 
-def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None):
+def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=()):
     """Deterministic natural-search policy; quality is never silently changed."""
     candidates = rank_results(items, query, year=year, season=season, episode=episode,
                               strict_series=True)
-    wanted = title_tokens(query)
-    candidates = [i for i in candidates if wanted <= title_tokens(i.get("title", ""))
+    wanted = [title_tokens(q) for q in [query, *query_aliases] if q.strip()]
+    candidates = [i for i in candidates if any(w <= title_tokens(i.get("title", "")) for w in wanted)
                   and not is_av1_title(i.get("title", ""))
                   and (not year or not re.search(r"\b(?:19|20)\d{2}\b", i.get("title", ""))
                        or re.search(r"\b" + str(year) + r"\b", i.get("title", "")))

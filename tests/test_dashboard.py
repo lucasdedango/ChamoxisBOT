@@ -135,3 +135,30 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post('/api/updates/apply', json={'plan': 'plan', 'confirmed': True}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.updater.apply.assert_called_once_with('plan')
+
+
+    async def test_tmdb_choice_does_not_create_torrent_proposal(self):
+        with (self.root / 'manager/.env').open('a') as file:
+            file.write('TMDB_ACCESS_TOKEN=private-tmdb-token\n')
+        original = self.backend.side_effect
+        media = {'title': 'Show', 'kind': 'series', 'year': 2026, 'tmdb_id': 123, 'imdb_id': 'tt123', 'aliases': ['Show', 'Original'], 'tmdb_url': 'https://www.themoviedb.org/tv/123'}
+        async def backend(method, path, **kwargs):
+            if path == '/catalog/resolve': return {'items': [media], 'selected': None}
+            if path == '/catalog/media/series/123': return media
+            if path == '/catalog/library': return {'items': [media], 'total': 1, 'matched': 1, 'authoritative': True}
+            return await original(method, path, **kwargs)
+        self.backend.side_effect = backend
+        await self.login()
+        result = (await self.client.post('/api/search', json={'text': 'Show S11'}, headers=self.headers)).json()
+        self.assertIn('media_choices', result)
+        self.assertNotIn('proposal', result)
+        self.assertFalse(any(c.args[1] == '/search' for c in self.backend.await_args_list))
+        result = (await self.client.post('/api/search', json={'text': 'Show S11', 'media_id': 123, 'media_kind': 'series'}, headers=self.headers)).json()
+        self.assertEqual(result['media']['imdb_id'], 'tt123')
+        self.assertNotIn('private-tmdb-token', str(result))
+        lookup = next(c for c in self.backend.await_args_list if c.args[1] == '/search')
+        self.assertEqual(lookup.kwargs['json']['imdb_id'], 'tt123')
+        self.assertFalse(any(c.args[1] == '/downloads' for c in self.backend.await_args_list))
+        inventory = await self.client.get('/api/library?kind=series&genre=SF')
+        self.assertEqual(inventory.status_code, 200)
+        self.assertTrue(inventory.json()['authoritative'])
