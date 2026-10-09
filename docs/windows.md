@@ -83,14 +83,20 @@ un épisode demandé conserve seulement cet épisode. Les titres sans saison
 identifiable sont écartés dans ces recherches. Année, qualité et langue viennent
 des mots de la demande actuelle; une précision peut reprendre les critères de la
 proposition en attente, mais une nouvelle recherche ne reprend pas les anciens filtres.
+Une année absente du nom du torrent est acceptée avec un avertissement de vérification;
+une année explicitement différente reste exclue.
 Les recherches naturelles (`bot …` et `/plex demande`) appliquent ensuite des
 règles fixes : qualité demandée, AV1 exclu, MULTI préféré, seeds positifs préférés
 aux seeds inconnus, puis taille croissante. La préférence MULTI est remplacée par
-la langue explicitement demandée. Les torrents à zéro seed annoncé sont exclus;
+la langue explicitement demandée. Les torrents avec seeds positifs sont retenus
+en priorité. Si aucun ne correspond, les torrents à zéro seed ou aux seeds inconnus
+sont proposés avec un avertissement explicite avant et après l'ajout : le téléchargement
+peut prendre beaucoup de temps, rester en attente et ne jamais terminer. La confirmation
+habituelle est conservée; ce repli ne change pas la saison, qualité ou exclusion de l'AV1.
 une taille inconnue n'est pas traitée comme une taille nulle. La taille et les seeds
 annoncés apparaissent dans la proposition; ce nombre ne garantit pas une connexion
 dans qBittorrent. Une demande explicite « avec des seeds » ou « au moins 5 seeds »
-reste possible et exclut aussi les seeds inconnus.
+reste possible comme préférence; si le minimum n'est pas disponible, le repli est annoncé.
 
 Sans qualité précisée, `SEARCH_DEFAULT_QUALITY=1080p` dans `manager/.env` sert de
 valeur par défaut (2160p, 1080p, 720p ou 480p). Si cette qualité n'est pas disponible,

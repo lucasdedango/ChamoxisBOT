@@ -203,7 +203,8 @@ class Conversation:
             return
         self.store.set(key, None)
         self.remember(key, "assistant", f"Demande enregistrée : {task['id']} pour {item['title']}.")
-        await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/plex operations`. En mode test, rien ne sera téléchargé.")
+        warning = "\n⚠️ " + item["availability_warning"] if item.get("availability_warning") else ""
+        await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/plex operations`. En mode test, rien ne sera téléchargé." + warning)
 
     async def search(self, message, key, request, source=None):
         current = self.store.get(key)
@@ -249,8 +250,7 @@ class Conversation:
                 self.remember(key, "assistant", prompt)
                 return
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
-                           else "Je n’ai trouvé aucun résultat correspondant avec suffisamment de seeds annoncés. Les résultats sans nombre de seeds connu ne sont pas considérés comme disponibles."
-                           if intent.get("min_seeders") else "Je n’ai trouvé aucun torrent compatible avec ces critères. Les résultats AV1 ou à zéro seed annoncé sont exclus.")
+                           else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus.")
             return
         state = {"phase": "confirm", "items": results["items"][:5], "intent": intent, "prefs": prefs,
                  "user_request": source,
@@ -263,6 +263,9 @@ class Conversation:
         lines = [f"Je propose d’ajouter **{title}**.", f"Dossier cible : **{discord.utils.escape_markdown(state['prefs']['target_name'])}**."]
         if selected.get("selection_reason"):
             lines.append("Choix selon tes règles : " + discord.utils.escape_markdown(selected["selection_reason"][:250]) + ".")
+        for warning in ("availability_warning", "identity_warning"):
+            if selected.get(warning):
+                lines.append("⚠️ " + selected[warning])
         seeds = selected.get("seeders")
         lines.append(f"Seeds annoncés par l’indexer : **{seeds if str(seeds or '').isdigit() else 'inconnus'}**. Ce nombre ne garantit pas une connexion dans qBittorrent.")
         mismatches = [name for name, value in selected.get("preference_matches", {}).items() if value is False]
@@ -272,8 +275,8 @@ class Conversation:
         if len(state["items"]) > 1:
             lines.append("Autres choix :\n" + "\n".join(f"**{i + 1}** — {discord.utils.escape_markdown(item['title'][:130])} (seeds : {item.get('seeders') if str(item.get('seeders') or '').isdigit() else 'inconnus'})"
                           for i, item in enumerate(state["items"])))
-        lines.append("Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Confirmation valable 5 minutes.")
-        proposal = await self.say(message, "\n".join(lines))
+        footer = "Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Confirmation valable 5 minutes."
+        proposal = await self.say(message, "\n".join(lines)[:1950 - len(footer) - 1] + "\n" + footer)
         state["proposal_message_id"] = proposal.id
         self.save(key, state)
         self.remember(key, "assistant", "Recherche en attente de confirmation : " + json.dumps(state["intent"], ensure_ascii=False) + "; proposition : " + selected["title"])

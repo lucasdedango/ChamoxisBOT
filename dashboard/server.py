@@ -229,7 +229,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
             season=intent["season"], episode=intent["episode"], series_mode="single" if intent["episode"] else "complete")
         proposals[proposal] = {"items": items, "prefs": prefs, "user_id": user_id, "expires": time.time() + 300}
         # Opaque module refs stay on the server, never trust a browser-provided torrent URL.
-        public = [{k: i.get(k) for k in ("title", "size", "seeders", "source", "selection_reason")} for i in items]
+        public = [{k: i.get(k) for k in ("title", "size", "seeders", "source", "selection_reason", "availability_warning", "identity_warning")} for i in items]
         return {"proposal": proposal, "intent": {**intent, "quality": quality}, "items": public,
                 "quality_options": result.get("quality_options", []), "errors": result.get("errors", []), "user_id": str(user_id) if user_id else None}
 
@@ -244,7 +244,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         add = AddTorrent(request_id=f"dashboard:{body.proposal}:{body.index}", title=item["title"],
                          link=item.get("enclosure") or item["link"], user_id=found["user_id"], prefs=found["prefs"], confirmed=True)
         result = await query("plex", "/downloads", "POST", json=add.model_dump())
-        return {"id": result["id"], "state": result["state"]}
+        return {"id": result["id"], "state": result["state"], "warning": item.get("availability_warning")}
 
     @app.post("/api/chat", dependencies=[Depends(authenticated)])
     async def chat(body: SearchBody):

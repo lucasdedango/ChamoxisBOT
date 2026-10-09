@@ -237,7 +237,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.plex.request.side_effect = None
         self.plex.request.return_value = {"items": [], "errors": []}
         await self.worker.handle(self.message("bot cherche Charlie avec des seeds", message_id=100))
-        self.assertIn("seeds annoncés", self.channel.send.await_args.args[0])
+        self.assertIn("aucun torrent compatible", self.channel.send.await_args.args[0].lower())
         self.assertIsNone(self.store.get("conversation:1:123:42"))
         await self.worker.handle(self.message("oui"))
         self.assertEqual(self.downloads(), [])
@@ -287,3 +287,14 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.channel.send.await_args.args[0], "Bonjour !")
         await self.worker.handle(self.message("manger du chocolat"))
         self.assertEqual(self.manager.request.await_count, 2)
+
+    async def test_zero_seed_warning_shown_before_and_after_confirmed_add(self):
+        self.items[:] = [{'title': 'Charlie.2005.MULTI.1080p', 'enclosure': 'result:first', 'seeders': '0',
+                         'availability_warning': 'Aucun seed annoncé. Cela peut prendre beaucoup de temps.'}]
+        await self.worker.handle(self.message('bot cherche Charlie de 2005', message_id=100))
+        self.assertIn('beaucoup de temps', self.channel.send.await_args.args[0])
+        self.assertIn('Réponds **oui**', self.channel.send.await_args.args[0])
+        self.assertEqual(self.downloads(), [])
+        await self.worker.handle(self.message('oui'))
+        self.assertEqual(len(self.downloads()), 1)
+        self.assertIn('beaucoup de temps', self.channel.send.await_args.args[0])

@@ -20,7 +20,7 @@ class SelectionPolicyTests(unittest.TestCase):
                  self.item("MULTI.1080p.AV1", "20", "50"),
                  self.item("MULTI.1080p", "0", "10")]
         selected, _ = self.select(items)
-        self.assertEqual([i["size"] for i in selected], ["2000", "3000", "500", "100"])
+        self.assertEqual([i["size"] for i in selected], ["2000", "3000", "100"])
         self.assertIn("MULTI", selected[0]["selection_reason"])
         self.assertNotIn("selection_reason", items[0])
 
@@ -43,11 +43,12 @@ class SelectionPolicyTests(unittest.TestCase):
         self.assertEqual(selected[0]["size"], "123")
         self.assertIn("taille inconnue", selected[1]["selection_reason"])
 
-    def test_unknown_seed_is_possible_but_explicit_minimum_remains_strict(self):
+    def test_unknown_seed_fallback_is_warned_even_with_explicit_minimum(self):
         selected, _ = self.select([self.item("MULTI.1080p", seeds="")])
         self.assertIn("seeds : inconnus", selected[0]["selection_reason"])
         selected, options = self.select([self.item("MULTI.1080p", seeds="")], min_seeders=1)
-        self.assertEqual((selected, options), ([], []))
+        self.assertEqual(options, ["1080p"])
+        self.assertIn("sans garantie", selected[0]["availability_warning"])
 
     def test_explicit_language_overrides_multi_preference(self):
         selected, _ = self.select([self.item("MULTI.1080p", size="2000"),
@@ -106,3 +107,36 @@ class SelectionPolicyAPITests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(result["items"][0]["link"].startswith("result:"))
             finally:
                 store.close()
+
+
+class SeedFallbackTests(unittest.TestCase):
+    def test_zero_seed_result_is_proposed_with_warning_when_only_choice(self):
+        item = {'title': 'Below.S01.MULTI.1080p.H264', 'seeders': '0', 'size': '1000'}
+        selected, _ = select_results([item], 'Below', season=1, quality='1080p', year=2026)
+        self.assertEqual(selected[0]['seeders'], '0')
+        self.assertIn('beaucoup de temps', selected[0]['availability_warning'])
+        self.assertIn('2026', selected[0]['identity_warning'])
+
+    def test_positive_seeds_always_win_over_smaller_zero_or_unknown(self):
+        items = [{'title': 'Below.S01.MULTI.1080p', 'seeders': '0', 'size': '1'},
+                 {'title': 'Below.S01.MULTI.1080p', 'seeders': '', 'size': '2'},
+                 {'title': 'Below.S01.FRENCH.1080p', 'seeders': '2', 'size': '100'}]
+        selected, _ = select_results(items, 'Below', season=1, quality='1080p')
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]['seeders'], '2')
+        self.assertNotIn('availability_warning', selected[0])
+
+    def test_fallback_does_not_relax_quality_season_codec_or_explicit_wrong_year(self):
+        items = [{'title': 'Below.2025.S01.MULTI.1080p', 'seeders': '0'},
+                 {'title': 'Below.2026.S02.MULTI.1080p', 'seeders': '0'},
+                 {'title': 'Below.2026.S01.MULTI.1080p.AV1', 'seeders': '0'},
+                 {'title': 'Below.2026.S01.MULTI.720p', 'seeders': '0'}]
+        selected, options = select_results(items, 'Below', season=1, quality='1080p', year=2026)
+        self.assertEqual(selected, [])
+        self.assertEqual(options, ['720p'])
+
+    def test_explicit_seed_minimum_can_fall_back_to_existing_zero_seed(self):
+        selected, _ = select_results([{'title': 'Below.S01.MULTI.1080p', 'seeders': '0'}],
+                                    'Below', season=1, quality='1080p', min_seeders=1)
+        self.assertEqual(len(selected), 1)
+        self.assertIn('Aucun torrent compatible', selected[0]['availability_warning'])

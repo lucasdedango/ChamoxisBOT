@@ -266,6 +266,9 @@ async def send_torznab_results(
         labels = {"year": "année", "quality": "qualité", "language": "langue probable", "season": "saison", "episode": "épisode"}
         matched = [label for name, label in labels.items() if matches.get(name) is True]
         preference_note = " | ✓ " + ", ".join(matched) if matched else ""
+        for warning in ("availability_warning", "identity_warning"):
+            if item.get(warning):
+                preference_note += " | ⚠️ " + item[warning]
         lines.append(
             f"{idx}. {pop} [{source}] {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`) "
             f"[S:{seeds} G:{grabs}]{preference_note}"
@@ -280,7 +283,7 @@ async def send_torznab_results(
     if rank_preferences:
         footer = f"Résultats préférés en premier | Année : {year or 'non précisée'} | Qualité : {quality or 'toutes'} | Langue : {language or 'toutes'} | Alternatives conservées"
     if selection_policy:
-        footer = f"Qualité : {quality} | Langue : {language or 'MULTI préféré'} | Seeds positifs préférés | Taille croissante | AV1 et zéro seed exclus"
+        footer = f"Qualité : {quality} | Langue : {language or 'MULTI préféré'} | Seeds positifs préférés, repli avec avertissement | Taille croissante | AV1 exclu"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)

@@ -27,22 +27,32 @@ def title_tokens(value):
 def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None):
     """Deterministic natural-search policy; quality is never silently changed."""
     candidates = rank_results(items, query, year=year, season=season, episode=episode,
-                              strict_series=True, min_seeders=min_seeders)
+                              strict_series=True)
     wanted = title_tokens(query)
     candidates = [i for i in candidates if wanted <= title_tokens(i.get("title", ""))
                   and not is_av1_title(i.get("title", ""))
-                  and (not year or re.search(r"\b" + str(year) + r"\b", i.get("title", "")))
-                  and (not language or language_matches(i.get("title", ""), language))
-                  and seed_count(i) != 0]
+                  and (not year or not re.search(r"\b(?:19|20)\d{2}\b", i.get("title", ""))
+                       or re.search(r"\b" + str(year) + r"\b", i.get("title", "")))
+                  and (not language or language_matches(i.get("title", ""), language))]
     options = [q for q in ("2160p", "1080p", "720p", "480p")
                if any(quality_matches(i.get("title", ""), q) for i in candidates)]
     selected = [i for i in candidates if quality_matches(i.get("title", ""), quality)]
+    positive = [i for i in selected if (seed_count(i) or 0) > 0]
+    preferred = [i for i in positive if seed_count(i) >= (min_seeders or 1)]
+    warning = None
+    if preferred:
+        selected = preferred
+    elif positive:
+        selected = positive
+        warning = "Le nombre de seeds annoncé est inférieur au minimum demandé. Le téléchargement peut prendre du temps."
+    elif selected:
+        warning = "Aucun torrent compatible n’annonce de seed positif. Le téléchargement peut prendre beaucoup de temps ou rester en attente jusqu’à ce qu’une source se connecte, sans garantie de terminer."
 
     def order(item):
         multi = bool(re.search(r"\bmulti\b", item.get("title", ""), re.I))
         seeds = seed_count(item)
         size = parse_size_bytes(item.get("size", ""))
-        return (0 if language or multi else 1, 0 if seeds is not None else 1,
+        return (0 if language or multi else 1, 0 if (seeds or 0) > 0 else 1 if seeds is None else 2,
                 size if size > 0 else float("inf"), -(seeds or 0), item.get("title", ""))
 
     selected.sort(key=order)
@@ -55,6 +65,10 @@ def select_results(items, query, *, year=None, quality=None, language=None, seas
             "anglais repéré" if language_matches(title, "anglais") else "langue non confirmée")
         weight = f"{size / 1024 ** 3:.2f} Gio" if size > 0 else "taille inconnue"
         item["selection_reason"] = f"{quality or 'qualité non précisée'} · {lang} · {weight} · seeds : {seeds if seeds is not None else 'inconnus'}"
+        if warning:
+            item["availability_warning"] = warning
+        if year and not re.search(r"\b" + str(year) + r"\b", title):
+            item["identity_warning"] = f"L’année {year} n’est pas indiquée dans le titre du torrent; vérifie qu’il s’agit de la bonne œuvre."
         item["preference_matches"]["quality"] = quality_matches(title, quality) if quality else None
         item["preference_matches"]["language"] = language_matches(title, language) if language else None
     return selected, options
