@@ -138,6 +138,20 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.task(task["id"])["state"], "cancelled")
         self.engine.import_torrent_entry.assert_not_awaited()
 
+    async def test_completed_download_waits_for_qbit_automatic_move_before_import(self):
+        task = self.store.create_task("one", download())
+        self.store.transition(task["id"], "downloading", {"hash": "a" * 40})
+        self.engine.qbit.get_torrent_by_hash.return_value = {"progress": 1, "state": "moving"}
+        await self.worker.step()
+        self.engine.import_torrent_entry.assert_not_awaited()
+        self.assertEqual(self.store.task(task["id"])["state"], "downloading")
+        self.assertEqual(self.store.task(task["id"])["result"]["state"], "moving")
+        self.engine.qbit.get_torrent_by_hash.return_value = {"progress": 1, "state": "uploading"}
+        self.engine.import_torrent_entry.return_value = ("Import OK", False, True, 1, "a" * 40)
+        await self.worker.step()
+        self.engine.import_torrent_entry.assert_awaited_once()
+        self.assertEqual(self.store.task(task["id"])["state"], "completed")
+
     async def test_test_mode_never_calls_qbit(self):
         task = self.store.create_task("one", download())
         self.engine.DISABLE_TORRENT_DOWNLOAD = True

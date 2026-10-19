@@ -94,3 +94,5 @@ interaction Discord.
 ### TMDb et recommandations Plex
 
 Voir [la configuration TMDb/Plex](docs/tmdb-plex.md) pour identifier les œuvres, choisir entre homonymes et consulter les films/séries réellement disponibles. TMDb est une API en ligne et ne nécessite aucune installation locale.
+
+Pour les résultats filtrés, interactions Discord expirées et déplacements longs entre disques, voir [le diagnostic recherche/import](docs/diagnostic-recherche-import.md).

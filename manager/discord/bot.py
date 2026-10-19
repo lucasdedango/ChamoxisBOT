@@ -629,6 +629,10 @@ async def ensure_user_has_read_info(interaction: discord.Interaction) -> bool:
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = getattr(error, "original", error)
+    if isinstance(original, discord.NotFound) and original.code in {10062, 10015}:
+        logger.warning("Discord interaction expired: command=%s interaction=%s code=%s; retry the command", getattr(getattr(interaction, "command", None), "qualified_name", "unknown"), interaction.id, original.code)
+        return  # Retrying an expired interaction would only produce a second error.
     logger.exception(
         "App command error: command=%s user=%s(%s) guild=%s",
         getattr(getattr(interaction, "command", None), "qualified_name", "unknown"),
@@ -723,6 +727,7 @@ async def recherchetorrent(
     query: str,
     indexer: str = "all",
 ):
+    await interaction.response.defer(ephemeral=True, thinking=True)
     logger.info("/recherchetorrent called by %s (%s), indexer=%s", interaction.user, interaction.user.id, indexer)
     idx_value = (indexer or "all").strip().lower()
     if idx_value not in {"all", "c411", "torr9"}:
@@ -737,10 +742,9 @@ async def recherchetorrent(
         f"Détection automatique: {'Série' if default_kind == 'series' else 'Film'}"
     )
 
-    await interaction.response.send_message(
-        content,
+    await interaction.edit_original_response(
+        content=content,
         view=TorrentKindView(query, season, episode, quality=None, indexer=mapped_indexer),
-        ephemeral=True,
     )
 
 
@@ -787,6 +791,7 @@ async def cleartorrents(interaction: discord.Interaction):
 
 @bot.tree.command(name="info", description="Guide complet d'utilisation du bot (obligatoire à la 1re utilisation).")
 async def info_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
     newly_registered = register_known_user(interaction.user.id)
     logger.info("/info called by %s (%s), newly_registered=%s", interaction.user, interaction.user.id, newly_registered)
 
@@ -820,7 +825,7 @@ async def info_cmd(interaction: discord.Interaction):
     )
 
     prefix = "✅ Ton compte est maintenant enregistré, tu peux utiliser toutes les commandes.\n\n" if newly_registered else "ℹ️ Ton compte est déjà enregistré.\n\n"
-    await interaction.response.send_message(prefix + text, ephemeral=True)
+    await interaction.edit_original_response(content=prefix + text)
 
 
 # Preserve historical commands and expose the same callbacks under /plex.

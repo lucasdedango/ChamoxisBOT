@@ -25,6 +25,7 @@
     "dashboard/updates.py",
     "docs/architecture.md",
     "docs/dashboard.md",
+    "docs/diagnostic-recherche-import.md",
     "docs/migration.md",
     "docs/tmdb-plex.md",
     "docs/windows.md",
@@ -96,6 +97,7 @@
     "tests/test_network_integration.py",
     "tests/test_plex_engine.py",
     "tests/test_resilience.py",
+    "tests/test_runtime_robustness.py",
     "tests/test_search_preferences.py",
     "tests/test_selection_policy.py"
   ]

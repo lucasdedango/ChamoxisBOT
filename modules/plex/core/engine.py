@@ -221,30 +221,44 @@ async def rename_file_resilient(info_hash: str, old_rel: Path, new_rel: Path):
         ) from error
 
 
-async def move_torrent_and_wait(info_hash: str, destination: Path, timeout: float = 300.0) -> dict:
-    """Move only after renames, then wait until qBittorrent exposes stable fresh paths."""
+async def move_torrent_and_wait(info_hash: str, destination: Path, timeout: float = 1800.0) -> dict:
+    """Keep waiting while qBittorrent is moving; timeout only an unconfirmed idle move."""
     await qbit.set_location(info_hash, destination)
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    started = loop.time()
+    deadline, next_log = started + timeout, started + 60
     last: dict | None = None
     destination_norm = os.path.normcase(os.path.normpath(str(destination)))
-    while loop.time() < deadline:
-        last = await qbit.get_torrent_by_hash(info_hash)
+    while True:
+        try:
+            last = await qbit.get_torrent_by_hash(info_hash)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            if loop.time() >= deadline:
+                raise TimeoutError(f"qBittorrent inaccessible pendant la vérification du déplacement: hash={info_hash}, destination={destination}") from None
+            await asyncio.sleep(5)
+            continue
         if not last:
             raise RuntimeError(f"Torrent disparu pendant le déplacement: {info_hash}")
         state = str(last.get("state", ""))
         save_path = os.path.normcase(os.path.normpath(str(last.get("save_path", ""))))
         content_path = os.path.normcase(os.path.normpath(str(last.get("content_path", ""))))
+        now = loop.time()
         moving = "moving" in state.lower()
-        if not moving and (save_path == destination_norm or content_path == destination_norm or content_path.startswith(destination_norm + os.sep)):
-            await qbit.list_files(info_hash)  # force a final authoritative refresh
+        if state.lower() in {"error", "missingfiles"}:
+            raise RuntimeError(f"Erreur qBittorrent pendant le déplacement: hash={info_hash}, destination={destination}, état={state}")
+        if moving:
+            deadline = now + timeout
+        elif save_path == destination_norm or content_path == destination_norm or content_path.startswith(destination_norm + os.sep):
+            await qbit.list_files(info_hash)
             logger.info("Torrent move completed: hash=%s destination=%s state=%s", info_hash, destination, state)
             return last
-        await asyncio.sleep(1)
-    raise TimeoutError(
-        f"Déplacement qBittorrent non confirmé après {timeout:.0f}s: hash={info_hash}, "
-        f"destination={destination}, dernier_état={last!r}"
-    )
+        elif now >= deadline:
+            # Never include the torrent dictionary: it contains private tracker URLs.
+            raise TimeoutError(f"Déplacement qBittorrent non confirmé après {timeout:.0f}s sans état moving: hash={info_hash}, destination={destination}, état={state}, save_path={last.get('save_path', '')}")
+        if now >= next_log:
+            logger.info("Torrent move pending: hash=%s destination=%s state=%s elapsed_seconds=%.0f", info_hash, destination, state, now - started)
+            next_log = now + 60
+        await asyncio.sleep(5)
 
 
 def ensure_dir(p: Path):

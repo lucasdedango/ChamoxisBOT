@@ -6,7 +6,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
+def redact_tracker_urls(message, replacement="[redacted]"):
+    # Cover plain tracker URLs and one/two levels of URL encoding inside magnets.
+    slash = r"(?:/|%2f|%252f)"
+    message = re.sub(r"(?i)(" + slash + r"announce" + slash + r")(?:(?!%2f|%252f)[^/\s?&#'\"<>\\])+", lambda m: m[1] + replacement, message)
+    message = re.sub(r"(?i)(" + slash + r")[a-z0-9_-]{16,}(" + slash + r"announce\b)", lambda m: m[1] + replacement + m[2], message)
+    return re.sub(r"(?i)((?:passkey|authkey)(?:\s*[=:]\s*|%3d|%253d))[^&\s,;'\"<>]+", lambda m: m[1] + replacement, message)
+
+
 def redact(message):
+    message = redact_tracker_urls(message)
     for name in ("TMDB_ACCESS_TOKEN", "DISCORD_TOKEN", "QBIT_PASS", "PROWLARR_API_KEY", "PLEX_TOKEN", "MANAGER_API_KEY", "MANAGER_ADMIN_API_KEY", "PLEX_MODULE_API_KEY"):
         value = os.getenv(name, "")
         if len(value) >= 6:

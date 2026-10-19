@@ -64,9 +64,13 @@ _SECRET_RE = re.compile(
 )
 
 
+from chamoxis_common.logging import redact_tracker_urls
+
+
 def redact_sensitive(value: object) -> object:
     """Return a log-safe copy while preserving useful URL/request context."""
     if isinstance(value, str):
+        value = redact_tracker_urls(value, "***REDACTED***")
         value = _AUTHORIZATION_RE.sub(
             lambda m: f"{m.group('key')}{m.group('sep')}***REDACTED***", value
         )

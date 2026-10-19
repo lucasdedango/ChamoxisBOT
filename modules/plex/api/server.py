@@ -3,6 +3,8 @@ import os
 import shutil
 import hashlib
 import logging
+from collections import Counter
+from chamoxis_common.logging import redact
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -12,7 +14,7 @@ from chamoxis_common.security import require_key
 from chamoxis_common.store import Conflict, Store
 from modules.plex.core.downloads import Downloads
 from modules.plex.bridge import deliver_events
-from modules.plex.core.search import rank_results, language_matches, select_results
+from modules.plex.core.search import rank_results, language_matches, select_results, rejection_reasons, seed_count
 from modules.plex.core.diagnostics import snapshot
 from modules.plex.core.library import Library, LibraryUnavailable
 from modules.plex.core.catalog_search import search_indexer
@@ -89,6 +91,7 @@ def create_app(engine=None, store=None, background=True):
                 items.extend(await search_indexer(engine, store, body, idx))
             except Exception:
                 errors.append({"indexer": idx, "error": "Search failed; inspect module logs"})
+        raw_items = list(items)
         received = len(items)
         items = [i for i in items if not engine.is_av1_title(i.get("title", ""))]
         compatible = len(items)
@@ -105,10 +108,33 @@ def create_app(engine=None, store=None, background=True):
             if body.language:
                 items = [i for i in items if language_matches(i.get("title", ""), body.language)]
             items.sort(key=lambda i: engine.parse_size_bytes(i.get("size", "")), reverse=True)
+        selected_refs = {(i.get("title"), i.get("source"), i.get("enclosure") or i.get("link")) for i in items}
+        excluded = Counter()
+        details = 0
+        for item in raw_items:
+            ref = (item.get("title"), item.get("source"), item.get("enclosure") or item.get("link"))
+            if ref in selected_refs:
+                continue
+            reasons = rejection_reasons(item, body.query, year=body.year, quality=body.quality,
+                language=body.language, season=body.season, episode=body.episode,
+                query_aliases=body.query_aliases, prefer_quality=body.prefer_quality,
+                check_title=body.selection_policy, strict_series=body.selection_policy or body.strict_series)
+            if body.rank_preferences and not body.selection_policy:
+                # Legacy ranking treats quality/language as preferences, not hard filters.
+                reasons = [r for r in reasons if r not in {"quality", "language"}]
+            if not reasons:
+                reasons = ["seed_preference" if body.selection_policy or body.min_seeders else "ranking"]
+            excluded.update(reasons)
+            if details < 50:
+                logger.info("Search excluded indexer=%s title=%r reasons=%s seeders=%s", redact(str(item.get("source", ""))),
+                            redact(str(item.get("title", ""))[:300]), ",".join(reasons), seed_count(item))
+                details += 1
+        if excluded:
+            logger.info("Search exclusions counts=%s detail_limit=50", dict(excluded))
         logger.info("Search results received=%s compatible=%s retained=%s ranking=%s indexer_errors=%s",
                     received, compatible, len(items), body.rank_preferences, len(errors))
         return {"items": public_results(items[:body.limit]), "errors": errors,
-                "seeders_required": body.min_seeders, "quality_options": quality_options}
+                "excluded_counts": dict(excluded), "seeders_required": body.min_seeders, "quality_options": quality_options}
 
     @app.get("/rss")
     async def rss(url: str | None = None, limit: int = Query(default=10, ge=1, le=100)):

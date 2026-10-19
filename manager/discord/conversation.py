@@ -337,6 +337,10 @@ class Conversation:
                                 "suggested": suggested, "proposal_message_id": proposal.id})
                 self.remember(key, "assistant", prompt)
                 return
+            labels = {"av1": "AV1", "title": "titre différent", "year": "année différente", "season": "saison différente ou absente", "episode": "épisode différent ou absent", "season_pack": "saison complète absente", "quality": "qualité différente", "language": "langue non repérée"}
+            excluded = results.get("excluded_counts", {})
+            if excluded:
+                await self.say(message, "Résultats écartés : " + "; ".join(f"{labels.get(reason, reason)} : {count}" for reason, count in excluded.items()) + ". Un torrent peut avoir plusieurs motifs d’exclusion.")
             self.save(key, {"phase": "retry", "intent": intent, "user_request": source, "proposal_message_id": message.id})
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
                            else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus. Réponds « autre recherche » pour affiner.")

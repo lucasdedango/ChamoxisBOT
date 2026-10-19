@@ -24,23 +24,25 @@ class Downloads:
             self.store.transition(task["id"], "needs_review")
             self.emit(task, "torrent.failed", {"reason": "Interrupted operation requires manual review"})
 
+    async def process(self, task):
+        try:
+            if task["state"] == "queued":
+                await self.add(task)
+            else:
+                await self.monitor(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Task operation failed: %s", task["id"])
+            current = self.store.task(task["id"])
+            if current and current["state"] in {"adding", "importing"}:
+                self.store.transition(task["id"], "needs_review")
+                self.emit(task, "plex.import.failed" if current["state"] == "importing" else "torrent.failed",
+                          {"reason": "Operation uncertain; inspect Plex module logs"})
+
     async def step(self):
         for task in self.store.tasks({"queued", "downloading"}):
-            try:
-                if task["state"] == "queued":
-                    await self.add(task)
-                else:
-                    await self.monitor(task)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # A polling outage must not lose the task or stop other downloads.
-                logger.exception("Task operation failed: %s", task["id"])
-                current = self.store.task(task["id"])
-                if current["state"] in {"adding", "importing"}:
-                    self.store.transition(task["id"], "needs_review")
-                    self.emit(task, "plex.import.failed" if current["state"] == "importing" else "torrent.failed",
-                              {"reason": "Operation uncertain; inspect Plex module logs"})
+            await self.process(task)
 
     async def add(self, task):
         if self.engine.DISABLE_TORRENT_DOWNLOAD:
@@ -113,6 +115,10 @@ class Downloads:
             if int(progress * 10) > int(task["result"].get("progress", 0) * 10):
                 self.emit(task, "torrent.progress", result)
             return
+        if info.get("state") in {"moving", "checkingUP", "checkingDL", "checkingResumeData"}:
+            # qBittorrent may first move incoming -> complete on its own.
+            # Do not rename or request a second move until that operation finishes.
+            return
         self.emit(task, "torrent.completed", result)
         if not self.store.claim(task["id"], "downloading", "importing"):
             return
@@ -130,6 +136,23 @@ class Downloads:
 
     async def run(self):
         self.recover()
-        while True:
-            await self.step()
-            await asyncio.sleep(self.poll_interval)
+        jobs = {}
+        try:
+            while True:
+                for task_id, job in list(jobs.items()):
+                    if job.done():
+                        job.result()  # Consume failures; process handles ordinary operation errors.
+                        del jobs[task_id]
+                for task in self.store.tasks({"queued", "downloading"}):
+                    if task["id"] in jobs:
+                        continue
+                    if task["state"] == "queued":
+                        # Serialize adds so before/after qBittorrent snapshots cannot race.
+                        await self.process(task)
+                    elif len(jobs) < 4:
+                        jobs[task["id"]] = asyncio.create_task(self.process(task), name="plex:" + task["id"])
+                await asyncio.sleep(self.poll_interval)
+        finally:
+            for job in jobs.values():
+                job.cancel()
+            await asyncio.gather(*jobs.values(), return_exceptions=True)

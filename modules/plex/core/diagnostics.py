@@ -22,6 +22,8 @@ def snapshot(task, torrent):
         reason = "Téléchargement en pause/arrêté."
     elif torrent.get("state") in {"error", "missingFiles"}:
         reason = "qBittorrent signale une erreur ou des fichiers manquants ; consulte ses détails."
+    elif torrent.get("state") == "moving":
+        reason = "qBittorrent déplace les fichiers entre dossiers/disques ; le transfert vers Plex attend la fin de cette opération."
     elif torrent.get("progress", 0) >= 1:
         reason = "Le téléchargement est terminé ; le module Plex doit encore finaliser son suivi/import."
     elif torrent.get("state") in {"checkingDL", "checkingResumeData", "checkingUP"}:

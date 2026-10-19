@@ -24,16 +24,37 @@ def title_tokens(value):
     return set(re.findall(r"[a-z0-9]+", value))
 
 
+def rejection_reasons(item, query, *, year=None, quality=None, language=None, season=0, episode=0,
+                      query_aliases=(), prefer_quality=False, check_title=True, strict_series=True):
+    title = item.get("title", "")
+    reasons = []
+    if is_av1_title(title):
+        reasons.append("av1")
+    wanted = [title_tokens(q) for q in [query, *query_aliases] if q.strip()]
+    if check_title and not any(w <= title_tokens(title) for w in wanted):
+        reasons.append("title")
+    years = {int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", title)}
+    if check_title and year and years and year not in years:
+        reasons.append("year")
+    numbers = series_numbers(title)
+    if strict_series and season and not any(s == season for s, _ in numbers):
+        reasons.append("season")
+    if strict_series and episode and not any(s == season and e == episode for s, e in numbers):
+        reasons.append("episode")
+    if strict_series and season and not episode and not any(s == season and e == 0 for s, e in numbers):
+        reasons.append("season_pack")
+    if quality and not prefer_quality and not quality_matches(title, quality):
+        reasons.append("quality")
+    if language and not language_matches(title, language):
+        reasons.append("language")
+    return reasons
+
+
 def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=(), prefer_quality=False):
     """Deterministic natural-search policy; quality is never silently changed."""
-    candidates = rank_results(items, query, year=year, season=season, episode=episode,
-                              strict_series=True)
-    wanted = [title_tokens(q) for q in [query, *query_aliases] if q.strip()]
-    candidates = [i for i in candidates if any(w <= title_tokens(i.get("title", "")) for w in wanted)
-                  and not is_av1_title(i.get("title", ""))
-                  and (not year or not re.search(r"\b(?:19|20)\d{2}\b", i.get("title", ""))
-                       or re.search(r"\b" + str(year) + r"\b", i.get("title", "")))
-                  and (not language or language_matches(i.get("title", ""), language))]
+    candidates = [item for item in items if not rejection_reasons(item, query, year=year,
+        language=language, season=season, episode=episode, query_aliases=query_aliases)]
+    candidates = rank_results(candidates, query, year=year, season=season, episode=episode, strict_series=True)
     options = [q for q in ("2160p", "1080p", "720p", "480p")
                if any(quality_matches(i.get("title", ""), q) for i in candidates)]
     selected = [i for i in candidates if prefer_quality or quality_matches(i.get("title", ""), quality)]
