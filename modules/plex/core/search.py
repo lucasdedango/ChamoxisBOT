@@ -18,10 +18,15 @@ def seed_count(item):
     return int(value) if re.fullmatch(r"\d+", value) else None
 
 
+def normalize_search_text(value):
+    value = ''.join(c for c in unicodedata.normalize('NFKD', value) if not unicodedata.combining(c))
+    # Keep English possessives compatible with releases such as Greys.Anatomy.
+    value = re.sub(r"(?<=\w)['’]s\b", 's', value, flags=re.I)
+    return re.sub(r'[\W_]+', ' ', value).strip()
+
+
 def title_tokens(value):
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().lower()
-    value = re.sub(r"['’]", "", value)
-    return set(re.findall(r"[a-z0-9]+", value))
+    return set(normalize_search_text(value).casefold().split())
 
 
 def rejection_reasons(item, query, *, year=None, quality=None, language=None, season=0, episode=0,

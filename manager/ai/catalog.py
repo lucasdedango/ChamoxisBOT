@@ -118,7 +118,7 @@ class TMDb:
 
     async def details(self, kind, media_id):
         category = 'tv' if kind == 'series' else 'movie'
-        item = await self.get(f'/{category}/{media_id}', append_to_response='external_ids,alternative_titles')
+        item = await self.get(f'/{category}/{media_id}', append_to_response='external_ids,alternative_titles,translations')
         result = self.public(item, kind)
         imdb = item.get('imdb_id') or item.get('external_ids', {}).get('imdb_id')
         result['imdb_id'] = imdb if isinstance(imdb, str) and re.fullmatch(r'tt\d+', imdb) else None
@@ -127,8 +127,15 @@ class TMDb:
                              'air_date': s.get('air_date')}
                              for s in item.get('seasons', []) if s.get('season_number', 0) > 0]
         alternatives = item.get('alternative_titles', {})
-        aliases = [result['title'], result['original_title']] + [a.get('title', '') for a in alternatives.get('results', alternatives.get('titles', [])) if a.get('iso_3166_1') in {'FR', 'US', 'GB'}]
-        result['aliases'] = list(dict.fromkeys(a for a in aliases if a))[:4]
+        regional = [a for a in alternatives.get('results', alternatives.get('titles', [])) if a.get('iso_3166_1') in {'FR', 'US', 'GB'}]
+        english = [t.get('data', {}).get('title') or t.get('data', {}).get('name') for t in item.get('translations', {}).get('translations', []) if t.get('iso_639_1') == 'en']
+        english += [a.get('title') for a in regional if a.get('iso_3166_1') in {'US', 'GB'}]
+        aliases = [result['title'], *[a for a in english if a][:1], result['original_title'], *[a.get('title') for a in regional]]
+        unique = {}
+        for alias in aliases:
+            if alias and normalize(alias):
+                unique.setdefault(normalize(alias), alias)
+        result['aliases'] = list(unique.values())[:4]
         return result
 
 

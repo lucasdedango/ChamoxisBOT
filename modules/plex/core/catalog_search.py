@@ -1,11 +1,19 @@
-"""Use advertised Torznab identifiers, then broad French/original title fallbacks."""
+"""Try Torznab identifiers and title variants, stopping after satisfactory results."""
 import time
 import logging
 
 logger = logging.getLogger(__name__)
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from xml.etree import ElementTree as ET
-from modules.plex.core.search import seed_count
+from modules.plex.core.search import seed_count, rejection_reasons, normalize_search_text
+
+
+def satisfactory_results(items, body):
+    """Do not stop on unrelated results, AV1 or availability/quality fallbacks."""
+    return any((seed_count(item) or 0) >= max(1, body.min_seeders or 1) and not rejection_reasons(
+        item, body.query, query_aliases=body.query_aliases, year=body.year, quality=body.quality,
+        language=body.language, season=body.season, episode=body.episode,
+        media_kind=body.media_kind if body.selection_policy else None) for item in items)
 
 
 def parameters(url, **changes):
@@ -45,16 +53,28 @@ async def search_indexer(engine, store, body, indexer):
             if body.episode and 'ep' in supported:
                 params['ep'] = body.episode
             urls.append(parameters(base, **params))
-    titles = list(dict.fromkeys(q.strip() for q in [body.query, *body.query_aliases] if q.strip()))[:2]
+    normalized = {}
+    for title in [body.query, *body.query_aliases]:
+        title = normalize_search_text(title)
+        if title:
+            normalized.setdefault(title.casefold(), title)
+    titles = list(normalized.values())[:4]
     targeted = []
     for title in titles:
         season = f"S{body.season:02d}" + (f"E{body.episode:02d}" if body.episode else '') if body.season else ''
-        for suffix in (season, str(body.year) if body.year else '', ' '.join(str(v) for v in (body.year, season) if v)):
+        suffix = season or (str(body.year) if body.year else '')
+        if suffix:
+            targeted.append(title + ' ' + suffix)
+        targeted.append(title)
+    # Additional targeted variants are a last resort after all main languages.
+    for title in titles:
+        season = f"S{body.season:02d}" + (f"E{body.episode:02d}" if body.episode else '') if body.season else ''
+        for suffix in (str(body.year) if body.year else '', ' '.join(str(v) for v in (body.year, season) if v)):
             if suffix:
                 targeted.append(title + ' ' + suffix)
-    titles = list(dict.fromkeys(targeted + titles))[:8]
+    titles = list(dict.fromkeys(targeted))
     urls.extend(engine.build_torznab_search_url(title, body.limit, indexer) for title in titles)
-    urls = list(dict.fromkeys(urls))
+    urls = list(dict.fromkeys(urls))[:12]
     rows, successes = {}, 0
     for base_url in urls:
         seen = set()
@@ -78,6 +98,9 @@ async def search_indexer(engine, store, body, indexer):
                     break  # Finished, or indexer ignored the requested offset.
             except Exception:
                 break  # Other title/identifier searches can still succeed.
+        if satisfactory_results(rows.values(), body):
+            logger.info('Indexer search stopped indexer=%s reason=compatible_non_av1_with_seeds queries=%s', indexer, urls.index(base_url) + 1)
+            break
     if not successes:
         raise RuntimeError('Indexer searches failed')
     return list(rows.values())

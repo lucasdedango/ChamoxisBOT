@@ -78,6 +78,65 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s['air_date'] for s in details['seasons']], ['2022-09-02', None])
         self.assertEqual([s['season'] for s in details['seasons']], [1, 2])
 
+    async def test_details_prioritize_french_english_and_original_without_extra_calls(self):
+        tmdb = TMDb(self.store, 'token')
+        tmdb.get = AsyncMock(return_value={'id': 1187326, 'title': "Tad l'explorateur et la Lampe magique",
+            'original_title': 'Tadeo Jones y la lámpara maravillosa',
+            'alternative_titles': {'titles': [{'iso_3166_1': 'FR', 'title': 'Un autre titre français'}]},
+            'translations': {'translations': [{'iso_639_1': 'en', 'data': {'title': 'Tad and the Magic Lamp'}}]}})
+        details = await tmdb.details('movies', 1187326)
+        self.assertEqual(details['aliases'][:3], [details['title'], 'Tad and the Magic Lamp', details['original_title']])
+        tmdb.get.assert_awaited_once()
+        self.assertIn('translations', tmdb.get.await_args.kwargs['append_to_response'])
+
+    def staged_engine(self, resolver, calls):
+        from urllib.parse import parse_qs, urlsplit, urlencode
+        async def fetch(url):
+            query = parse_qs(urlsplit(url).query).get('q', [''])[0]
+            calls.append(query)
+            return resolver(query)
+        return SimpleNamespace(build_torznab_search_url=lambda q, *a: 'http://tracker/?' + urlencode({'q': q}),
+                               fetch_rss=fetch, parse_rss_feed=lambda rows, *a: rows, indexer_label=lambda i: i)
+
+    async def test_stops_language_variants_after_a_valid_non_av1_result_with_seeds(self):
+        calls = []
+        engine = self.staged_engine(lambda q: [{'title': 'Titre.Francais.2026.1080p.H265', 'seeders': '3', 'link': 'result'}], calls)
+        body = Search(query='Titre Français', query_aliases=['English Title', 'Original Title'], year=2026, quality='1080p', selection_policy=True)
+        await search_indexer(engine, self.store, body, '1')
+        self.assertEqual(calls, ['Titre Francais 2026'])
+
+    async def test_unrelated_or_av1_results_do_not_prevent_english_fallback(self):
+        calls = []
+        def resolve(query):
+            if query == 'Tad and the Magic Lamp 2026':
+                return [{'title': 'Tad.and.the.Magic.Lamp.2026.1080p.H265', 'seeders': '3', 'link': 'english'}]
+            if query.endswith('2026'):
+                return [{'title': 'Other.2026.1080p.H265', 'seeders': '30', 'link': 'wrong'}]
+            return [{'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.1080p.AV1', 'seeders': '48', 'link': 'av1'}]
+        body = Search(query="Tad l’explorateur et la Lampe magique", query_aliases=['Tad and the Magic Lamp', 'Tadeo Jones y la lampara maravillosa'], year=2026, quality='1080p', selection_policy=True)
+        rows = await search_indexer(self.staged_engine(resolve, calls), self.store, body, '1')
+        self.assertEqual(calls, ['Tad l explorateur et la Lampe magique 2026', 'Tad l explorateur et la Lampe magique', 'Tad and the Magic Lamp 2026'])
+        chosen, _ = select_results(rows, body.query, query_aliases=body.query_aliases, year=2026, quality='1080p')
+        self.assertEqual([row['link'] for row in chosen], ['english'])
+
+    async def test_fallback_seed_and_quality_results_do_not_stop_search_and_requests_are_bounded(self):
+        calls = []
+        engine = self.staged_engine(lambda q: [{'title': 'Show.2026.S01.1080p.H265', 'seeders': '0', 'link': 'zero'},
+            {'title': 'Show.2026.S01.720p.H265', 'seeders': '40', 'link': 'quality'},
+            {'title': 'Show.2026.S01.1080p.H265', 'seeders': '2', 'link': 'minimum'}], calls)
+        body = Search(query='Show', query_aliases=['EN Show', 'Original Show', 'Other Show'], season=1, year=2026,
+                      quality='1080p', min_seeders=5, selection_policy=True)
+        rows = await search_indexer(engine, self.store, body, '1')
+        self.assertGreater(len(calls), 1)
+        self.assertLessEqual(len(calls), 12)
+        self.assertEqual(len(rows), 3)
+
+    def test_title_tokens_handle_apostrophes_dots_accents_and_english_possessives(self):
+        from modules.plex.core.search import rejection_reasons, title_tokens
+        self.assertEqual(rejection_reasons({'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.1080p.H265'}, "Tad l’explorateur et la Lampe magique", quality='1080p'), [])
+        self.assertEqual(title_tokens('Grey’s Anatomy'), title_tokens('Greys.Anatomy'))
+        self.assertEqual(title_tokens("L'Été"), title_tokens('L.Ete'))
+
     async def test_real_plex_inventory_genres_ids_cache_and_invalid_section(self):
         library = Library(self.store, self.url, 'plex-test', series='2')
         result = await library.browse('series', 'SF')

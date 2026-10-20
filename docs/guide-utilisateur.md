@@ -62,6 +62,8 @@ Le mode texte nécessite les salons autorisés et Message Content Intent activé
 
 ## Comment les torrents sont choisis
 
+Le bot essaie les identifiants disponibles puis les titres français, anglais et original fournis par TMDb. Il arrête les variantes d’un tracker dès qu’une requête fournit, après pagination, des résultats respectant les critères, hors AV1 et avec les seeds souhaités. S’il ne trouve que des résultats de repli, il continue les variantes. Les autres trackers configurés restent consultés. Les points et apostrophes des noms de releases sont pris en compte sans devoir saisir le nom exact du fichier.
+
 - Le bot respecte la qualité précisée. Sans précision, il privilégie la qualité configurée, généralement 1080p, et peut considérer les autres qualités si elle est indisponible. Un changement d’une qualité explicitement demandée nécessite un choix de l’utilisateur.
 - MULTI est privilégié, sauf langue demandée explicitement.
 - Les seeds positifs sont privilégiés, puis le poids réduit parmi les candidats compatibles. Leur nombre ne garantit pas une connexion dans qBittorrent.

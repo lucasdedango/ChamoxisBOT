@@ -55,7 +55,7 @@ class NetworkIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"message": {"content": '{"title":"Dune","year":2021,"language":"français","quality":"1080p"}'}})
 
         async def torznab(request):
-            self.assertEqual(request.query["q"], "Dune")
+            self.assertIn(request.query["q"], {"Dune", "Dune 2021"})
             return web.Response(text='<rss><channel><item><title>Dune.1984.ENGLISH.720p</title><enclosure url="http://test.invalid/other.torrent" length="99999"/></item><item><title>Dune.2021.FRENCH.1080p</title><enclosure url="http://test.invalid/dune.torrent" length="12345"/></item></channel></rss>', content_type="application/xml")
 
         fake.router.add_get("/api/tags", tags)
