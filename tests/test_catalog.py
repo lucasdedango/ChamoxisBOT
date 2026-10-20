@@ -25,6 +25,8 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
                 rows = [{'id': 1, 'title': 'Dune', 'original_title': 'Dune', 'release_date': '1984-01-01'},
                         {'id': 2, 'title': 'Dune', 'original_title': 'Dune', 'release_date': '2021-01-01'}]
                 return web.json_response({'results': rows})
+            if request.path == '/search/tv':
+                return web.json_response({'results': []})
             if request.path == '/movie/2':
                 return web.json_response({'id': 2, 'title': 'Dune', 'release_date': '2021-01-01', 'imdb_id': 'tt1160419', 'genres': [{'name': 'Science-fiction'}], 'alternative_titles': {'titles': [{'title': 'Dune: Part One', 'iso_3166_1': 'US'}]}})
             if request.path == '/library/sections':
@@ -53,7 +55,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         identified = await tmdb.resolve('Dune', 'movies', 2021)
         self.assertEqual(identified['selected']['imdb_id'], 'tt1160419')
         self.assertIn('Dune: Part One', identified['selected']['aliases'])
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)
         self.assertEqual(self.calls[0][2]['Authorization'], 'Bearer test-token')
         self.assertNotIn('test-token', str(self.calls[0][1]))
         self.assertEqual(identified_intent({'season': 1}, identified['selected'])['season'], 1)
@@ -150,3 +152,57 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Below S01', queries)
         self.assertIn('Below 2026', queries)
         self.assertIn('Below 2026 S01', queries)
+
+    async def test_harry_potter_exact_series_does_not_hide_franchise_movies(self):
+        async def get(path, **params):
+            if path == '/search/tv':
+                return {'results': [{'id': 100, 'name': 'Harry Potter', 'first_air_date': '2027-01-01'}]}
+            return {'results': [{'id': i, 'title': 'Harry Potter et ' + name, 'release_date': str(year)+'-01-01'} for i, name, year in [(1, 'la Pierre philosophale', 2001), (2, 'la Chambre des secrets', 2002), (3, 'le Prisonnier d’Azkaban', 2004), (4, 'la Coupe de feu', 2005), (5, 'l’Ordre du Phénix', 2007), (6, 'le Prince de sang-mêlé', 2009), (7, 'les Reliques de la Mort partie 1', 2010), (8, 'les Reliques de la Mort partie 2', 2011)]]}
+        tmdb = TMDb(self.store, 'token')
+        tmdb.get = AsyncMock(side_effect=get)
+        tmdb.details = AsyncMock()
+        for guessed_kind in ('series', 'movies'):
+            result = await tmdb.resolve('Harry Potter', guessed_kind)
+            self.assertIsNone(result['selected'])
+            self.assertEqual(len(result['items']), 9)
+            self.assertEqual({i['kind'] for i in result['items']}, {'movies', 'series'})
+        tmdb.details.assert_not_awaited()
+        self.assertEqual({c.args[0] for c in tmdb.get.await_args_list}, {'/search/movie', '/search/tv'})
+
+    async def test_exact_title_year_automatically_selects_only_when_unambiguous(self):
+        movie = {'id': 2, 'title': 'Harry Potter et la Chambre des secrets', 'release_date': '2002-01-01'}
+        tmdb = TMDb(self.store, 'token')
+        tmdb.get = AsyncMock(side_effect=lambda path, **_: {'results': [movie]} if path == '/search/movie' else {'results': [{'id': 100, 'name': 'Harry Potter', 'first_air_date': '2027-01-01'}]})
+        tmdb.details = AsyncMock(return_value={'tmdb_id': 2, 'kind': 'movies'})
+        result = await tmdb.resolve(movie['title'], 'series', 2002)
+        self.assertEqual(result['selected']['tmdb_id'], 2)
+        tmdb.details.assert_awaited_once_with('movies', 2)
+
+    async def test_one_failed_category_prevents_automatic_match(self):
+        from manager.ai.catalog import CatalogUnavailable
+        async def get(path, **_):
+            if path == '/search/tv':
+                raise CatalogUnavailable('TMDb indisponible pour les séries')
+            return {'results': [{'id': 1, 'title': 'Dune', 'release_date': '2021-01-01'}]}
+        tmdb = TMDb(self.store, 'token')
+        tmdb.get = AsyncMock(side_effect=get)
+        result = await tmdb.resolve('Dune', 'movies', 2021)
+        self.assertIsNone(result['selected'])
+        self.assertEqual(len(result['items']), 1)
+        self.assertIn('indisponible', result['warning'])
+
+    async def test_unified_search_always_uses_ids_and_targeted_queries_even_for_old_client(self):
+        from urllib.parse import parse_qs, urlsplit
+        queries = []
+        async def fetch(url):
+            params = parse_qs(urlsplit(url).query)
+            queries.append(params)
+            if params.get('t') == ['caps']:
+                return '<caps><searching><tv-search available="yes" supportedParams="q,imdbid,tmdbid,season,ep"/></searching></caps>'
+            return '<rss><channel/></rss>'
+        engine = SimpleNamespace(build_torznab_search_url=lambda q, *a: 'http://tracker/?t=search&q='+q, fetch_rss=fetch, parse_rss_feed=parse_rss_feed, indexer_label=lambda i:i)
+        await search_indexer(engine, self.store, Search(query='Below', year=2026, season=1, imdb_id='tt123', tmdb_id=456, media_kind='series', refined=False), '3')
+        self.assertTrue(any(q.get('imdbid') == ['123'] for q in queries))
+        self.assertTrue(any(q.get('tmdbid') == ['456'] and q.get('season') == ['1'] for q in queries))
+        for query in ('Below', 'Below S01', 'Below 2026', 'Below 2026 S01'):
+            self.assertTrue(any(q.get('q') == [query] for q in queries), query)

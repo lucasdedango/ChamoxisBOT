@@ -4,7 +4,7 @@
 
 Chaque recherche affiche dans les logs du module Plex :
 
-- `Indexer page` : indexer, offset, résultats demandés/reçus et recherche affinée ou non.
+- `Indexer page` : indexer, offset, résultats demandés/reçus et stratégie de recherche complète (`refined=True`).
 - `Search excluded` : titre, indexer, seeds et motifs d'exclusion, sur au plus 50 torrents par recherche.
 - `Search exclusions counts` : total par motif, même au-delà des 50 lignes détaillées.
 - `Search results` : résultats reçus, sans AV1, retenus et erreurs d'indexer.

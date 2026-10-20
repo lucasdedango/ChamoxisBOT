@@ -122,7 +122,12 @@ async def demande(interaction: discord.Interaction, texte: str):
             if catalog.get("selected"):
                 intent = identified_intent(intent, catalog["selected"])
             elif catalog.get("items"):
-                await interaction.followup.send("Plusieurs œuvres sont possibles. Choisis avant de rechercher :", view=IdentifyMedia(interaction.user.id, intent, catalog["items"]), ephemeral=True)
+                prompt = "Choisis l’œuvre avant de rechercher les torrents :"
+                if catalog.get("truncated"):
+                    prompt += " Plus de vingt œuvres possibles : précise le titre si nécessaire."
+                if catalog.get("warning"):
+                    prompt += "\n" + catalog["warning"]
+                await interaction.followup.send(prompt, view=IdentifyMedia(interaction.user.id, intent, catalog["items"]), ephemeral=True)
                 return
             elif catalog.get("warning"):
                 await interaction.followup.send(catalog["warning"] + ". Recherche par titre conservée.", ephemeral=True)

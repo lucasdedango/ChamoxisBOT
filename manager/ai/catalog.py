@@ -69,23 +69,46 @@ class TMDb:
     async def resolve(self, query, kind, year=None):
         if not self.token:
             return {'configured': False, 'items': [], 'warning': 'TMDb non configuré; recherche par titre conservée'}
-        try:
-            data = await self.get('/search/' + ('tv' if kind == 'series' else 'movie'), query=query, include_adult='false')
-            rows = [self.public(item, kind) for item in data.get('results', []) if item.get('id')]
-            if not rows:
-                other = 'movies' if kind == 'series' else 'series'
-                data = await self.get('/search/' + ('tv' if other == 'series' else 'movie'), query=query, include_adult='false')
-                rows = [self.public(item, other) for item in data.get('results', []) if item.get('id')]
-            exact = [r for r in rows if normalize(query) in {normalize(r['title']), normalize(r['original_title'])}]
-            matching_year = [r for r in rows if r['year'] == year] if year else []
-            choices = [r for r in exact if not year or r['year'] == year] or matching_year or exact or rows
-            choices = choices[:5]
-            automatic = len(choices) == 1 and choices[0] in exact and (not year or choices[0]['year'] == year)
-            selected = await self.details(choices[0]['kind'], choices[0]['tmdb_id']) if automatic else None
-            return {'configured': True, 'items': choices, 'selected': selected,
-                    'warning': None if choices else 'Aucune fiche TMDb trouvée; recherche par titre conservée'}
-        except CatalogUnavailable as error:
-            return {'configured': True, 'items': [], 'warning': str(error)}
+        results = await asyncio.gather(
+            self.get('/search/movie', query=query, include_adult='false'),
+            self.get('/search/tv', query=query, include_adult='false'), return_exceptions=True)
+        rows, failures, seen = [], [], set()
+        for category, data in zip(('movies', 'series'), results):
+            if isinstance(data, Exception):
+                failures.append(str(data) if isinstance(data, CatalogUnavailable) else 'TMDb indisponible')
+                continue
+            for item in data.get('results', []):
+                if not item.get('id') or (category, item['id']) in seen:
+                    continue
+                seen.add((category, item['id']))
+                rows.append(self.public(item, category))
+
+        def words(value):
+            return {normalize(w) for w in re.findall(r"[^\W_]+", value.casefold())}
+
+        wanted = words(query)
+        exact = lambda row: normalize(query) in {normalize(row['title']), normalize(row['original_title'])}
+        plausible = [r for r in rows if exact(r) or any(wanted and wanted <= words(t) for t in (r['title'], r['original_title']))]
+        choices = plausible or rows
+        matching_year = [r for r in choices if r['year'] == year] if year else []
+        if matching_year:
+            choices = matching_year
+        choices.sort(key=lambda r: (not exact(r), r['kind'] != kind, r['title'].casefold(), r['year'] or 9999))
+        # Evaluate ambiguity BEFORE limiting display. Never auto-pick if a category failed.
+        automatic = len(choices) == 1 and exact(choices[0]) and not failures and (not year or choices[0]['year'] == year)
+        warning = '; '.join(dict.fromkeys(failures)) or None
+        if year and choices and not matching_year:
+            warning = (warning + '; ' if warning else '') + 'Aucune fiche ne correspond à l’année demandée; précise ou choisis une autre œuvre'
+        selected = None
+        if automatic:
+            try:
+                selected = await self.details(choices[0]['kind'], choices[0]['tmdb_id'])
+            except CatalogUnavailable as error:
+                warning = str(error)
+        if not choices and not warning:
+            warning = 'Aucune fiche TMDb trouvée; recherche par titre conservée'
+        return {'configured': True, 'items': choices[:20], 'selected': selected,
+                'truncated': len(choices) > 20, 'warning': warning}
 
     async def details(self, kind, media_id):
         category = 'tv' if kind == 'series' else 'movie'

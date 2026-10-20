@@ -7,7 +7,7 @@ from chamoxis_common.http import APIClient
 
 def plex_client():
     return APIClient(os.getenv("PLEX_MODULE_URL", "http://127.0.0.1:8761"),
-                     os.getenv("PLEX_MODULE_API_KEY", ""), timeout=120)
+                     os.getenv("PLEX_MODULE_API_KEY", ""), timeout=300)
 
 
 def manager_client():

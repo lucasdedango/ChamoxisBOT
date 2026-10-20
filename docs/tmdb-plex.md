@@ -39,7 +39,7 @@ Les recommandations sont classées selon la note renseignée par Plex. Le bot n�
 
 ## Recherche et limites
 
-Les indexers sont interrogés largement par titre, sans concaténer qualité/langue/année. Le bot vérifie leurs capacités Torznab avant d’utiliser IMDb/TMDb. Il essaie au plus une recherche par identifiant et deux recherches par titre par indexer, puis retire les doublons. Un identifiant refusé n’empêche pas les recherches par titre.
+Les indexers sont interrogés largement par titre, sans concaténer qualité/langue/année. Le bot vérifie leurs capacités Torznab avant d’utiliser IMDb/TMDb. Chaque recherche utilise les identifiants IMDb et TMDb si disponibles et pris en charge, puis les variantes du titre français/original avec saison/épisode, année, année et saison, ainsi que les titres seuls. Les requêtes identiques et résultats en double sont retirés. Les filtres sont appliqués après récupération. Un identifiant refusé n’empêche pas les recherches par titre.
 
 Chaque recherche récupère jusqu’à 250 résultats par indexer, par pages de 100, 100 et 50 lorsque la pagination est prise en charge. Aucun réglage .env supplémentaire n’est nécessaire.
 
@@ -53,8 +53,22 @@ TMDb nécessite Internet et un jeton valide; Plex doit être accessible depuis l
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
 
-## Affiner une proposition
+## Une seule recherche complète
 
-Sur Discord, répondre **autre recherche**, **affine la recherche** ou **ce n’est pas le bon** dans les cinq minutes réutilise l’œuvre identifiée et les préférences. Le bot essaie le titre avec saison/épisode, avec année, puis année et saison, ainsi que TMDb si l’indexer annonce ce support. Les doublons sont retirés. Cette recherche peut être plus lente et dépend toujours des résultats exposés par Prowlarr. La nouvelle proposition nécessite sa propre confirmation; une réponse à une ancienne proposition ne la confirme pas. Un ajout dont la confirmation est incertaine bloque cette relance.
+La recherche complète est utilisée dès le départ sur Discord, avec `/plex demande`, dans les commandes classiques et dans le dashboard. Il n’y a plus de passage préalable par une recherche simple. Les recherches larges par titre restent présentes pour retrouver les releases sans année; elles sont combinées aux identifiants et aux variantes ciblées.
+
+Répondre **autre recherche** ou **ce n’est pas le bon** n’envoie plus les mêmes requêtes une seconde fois. Le bot invalide la proposition et demande de préciser l’œuvre ou les critères. Un « oui » à ce stade ne peut pas confirmer l’ancienne proposition. Un ajout dont la confirmation reste incertaine conserve sa protection et doit être vérifié avant une nouvelle recherche.
+
+Cette stratégie peut être plus lente et reste dépendante de ce que Prowlarr et les indexers exposent. Les délais des clients Discord/dashboard ont été adaptés. Aucun téléchargement n’est confirmé par une recherche ou un choix de fiche.
+
+## Ambiguïtés TMDb
+
+Le catalogue interroge systématiquement **films et séries**. Le type deviné par l’IA sert seulement à ordonner les choix; il ne masque plus l’autre catégorie. Les titres plausibles sont comparés à la demande dans les titres français et originaux. Une correspondance exacte ne masque pas les titres plus longs correspondant à la même recherche.
+
+Ainsi, **Harry Potter** présente aussi les films lorsque la série homonyme apparaît. **Dune** demande de choisir entre les œuvres correspondantes. Une année explicite réduit les choix si des fiches correspondent. Un titre précis avec son année peut être sélectionné automatiquement seulement s’il reste une unique correspondance exacte et si les deux recherches TMDb ont réussi.
+
+Discord affiche les fiches par pages de cinq : répondre **suivant** ou **précédent**, puis le numéro visible. `/plex demande` propose un menu avec type et année. Le dashboard affiche également le type film/série. Au plus vingt choix sont affichés; un avertissement invite à préciser le titre au-delà. Les premières pages de recherche TMDb sont utilisées, ce qui ne garantit pas un inventaire exhaustif d’une très grande franchise.
+
+Si une catégorie TMDb est indisponible, le bot ne sélectionne pas automatiquement l’unique résultat de l’autre catégorie. Si aucune fiche ne correspond à l’année demandée, il demande un choix avec un avertissement. Le choix de fiche mène ensuite aux torrents, puis à une confirmation d’ajout distincte.
 
 Les logs `Indexer page` indiquent offset, nombre demandé et nombre reçu pour diagnostiquer la pagination.

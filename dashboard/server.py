@@ -84,7 +84,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
 
     async def query(kind, path, method="GET", **kwargs):
         try:
-            return await client(kind, timeout=210 if path.startswith("/ai/") else 30).request(method, path, **kwargs)
+            return await client(kind, timeout=210 if path.startswith("/ai/") else 300 if path == "/search" else 45 if path.startswith("/catalog/") else 30).request(method, path, **kwargs)
         except Exception as error:
             raise HTTPException(502, f"{kind} indisponible ou requête refusée (HTTP {getattr(error, 'status', '?')})") from error
 
@@ -234,7 +234,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
                 if catalog.get("selected"):
                     intent = identified_intent(intent, catalog["selected"])
                 elif catalog.get("items"):
-                    return {"media_choices": catalog["items"], "items": []}
+                    return {"media_choices": catalog["items"], "catalog_warning": catalog.get("warning"), "truncated": catalog.get("truncated", False), "items": []}
         if intent.get("clarification"):
             return {"clarification": intent["clarification"], "items": []}
         configured = settings.values("manager")

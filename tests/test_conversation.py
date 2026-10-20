@@ -329,15 +329,35 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             await self.worker.handle(self.message("oui", message_id=2002))
             self.assertEqual(len(self.downloads()), 1)
 
-    async def test_refine_reuses_identification_and_requires_new_confirmation(self):
+    async def test_complete_search_is_default_and_rejected_proposal_is_invalidated(self):
         await self.worker.handle(self.message("bot cherche Charlie de 2005", message_id=100))
+        self.assertTrue(self.plex.request.await_args.kwargs['json']['refined'])
         self.manager.request.reset_mock()
+        calls = self.plex.request.await_count
         await self.worker.handle(self.message("man ce n’est pas le bon", message_id=2001))
         self.manager.request.assert_not_awaited()
-        self.assertTrue(self.plex.request.await_args.kwargs['json']['refined'])
+        self.assertEqual(self.plex.request.await_count, calls)
+        self.assertEqual(self.store.get('conversation:1:123:42')['phase'], 'clarify')
+        self.assertIn('complète a déjà', self.channel.send.await_args.args[0])
+        await self.worker.handle(self.message('oui', message_id=2002))
         self.assertEqual(self.downloads(), [])
-        state = self.store.get('conversation:1:123:42')
-        await self.worker.handle(self.message('oui', message_id=2002, reference=SimpleNamespace(message_id=1002)))
-        self.assertEqual(self.downloads(), [])
-        await self.worker.handle(self.message('oui', message_id=2003, reference=SimpleNamespace(message_id=state['proposal_message_id'])))
-        self.assertEqual(len(self.downloads()), 1)
+
+    async def test_catalog_choices_are_paginated_before_any_torrent_search(self):
+        choices = [{'title': f'Harry Potter {i}', 'kind': 'movies' if i else 'series', 'year': 2000+i, 'tmdb_id': i+1} for i in range(9)]
+        media = {**choices[5], 'tmdb_url': 'https://www.themoviedb.org/movie/6', 'aliases': [choices[5]['title']]}
+        self.manager.request.side_effect = [{'intent': self.intent}, {'items': choices, 'selected': None}, media]
+        with patch.dict(os.environ, {'TMDB_ACCESS_TOKEN': 'test-token'}):
+            await self.worker.handle(self.message('bot cherche Harry Potter', message_id=100))
+            self.assertIn('Page 1/2', self.channel.send.await_args.args[0])
+            self.assertIn('série', self.channel.send.await_args.args[0])
+            await self.worker.handle(self.message('6', message_id=2000))
+            self.plex.request.assert_not_awaited()
+            await self.worker.handle(self.message('man suivant', message_id=2001))
+            self.assertIn('Page 2/2', self.channel.send.await_args.args[0])
+            self.assertIn('**6**', self.channel.send.await_args.args[0])
+            await self.worker.handle(self.message('6', message_id=2002))
+            self.assertEqual(self.manager.request.await_args.args[1], '/catalog/media/movies/6')
+            self.assertTrue(self.plex.request.await_args.kwargs['json']['refined'])
+            self.assertEqual(self.downloads(), [])
+            await self.worker.handle(self.message('oui', message_id=2003))
+            self.assertEqual(len(self.downloads()), 1)

@@ -166,7 +166,7 @@ class Conversation:
         refine = addressed.casefold().strip(" .!?").replace("’", "'") in {"autre recherche", "affine la recherche", "affiner la recherche", "ce n'est pas le bon", "pas le bon", "cherche mieux"}
         if refine and (prefix or state):
             if not state or "intent" not in state:
-                await self.say(message, "Refais d’abord une recherche, puis réponds « autre recherche » à la proposition.")
+                await self.say(message, "La recherche complète est utilisée par défaut. Précise le titre, l’année ou les critères avec « bot cherche … ».")
                 return
             reference = getattr(message, "reference", None)
             if message.id <= state.get("proposal_message_id", 0) or reference and reference.message_id != state.get("proposal_message_id"):
@@ -174,10 +174,8 @@ class Conversation:
             if state.get("uncertain"):
                 await self.say(message, "L’ajout précédent est incertain. Vérifie cette demande avant de rechercher autre chose.")
                 return
-            await self.say(message, "J’affine avec le titre, l’année, la saison et les identifiants disponibles… Aucun ajout n’est lancé.")
-            intent = {**state["intent"], "refined": True}
-            self.store.set(key, None)
-            await self.lookup(message, key, intent, state["user_request"])
+            self.save(key, {"phase": "clarify", "request": state["user_request"], "user_request": state["user_request"]})
+            await self.say(message, "La recherche complète a déjà été effectuée. Précise le titre ou l’année de l’œuvre, la saison, la qualité ou la langue souhaitée, puis recommence avec « bot cherche … ». Rien de nouveau n’a été ajouté.")
             return
         if trigger:
             request = trigger[1].strip(' "«»')
@@ -190,7 +188,8 @@ class Conversation:
         if prefix:
             answer = addressed.casefold().strip(" .!")
             quality_reply = state and state["phase"] == "quality" and answer in state["options"]
-            if not quality_reply and (not state or answer not in {"oui", "oui merci", "oui ajoute", "oui ajoute le", "confirme", "je confirme", "non", "annule", "annuler", "stop"} and not answer.isdigit()):
+            page_reply = state and state["phase"] == "identify" and answer in {"suivant", "précédent", "precedent"}
+            if not quality_reply and not page_reply and (not state or answer not in {"oui", "oui merci", "oui ajoute", "oui ajoute le", "confirme", "je confirme", "non", "annule", "annuler", "stop"} and not answer.isdigit()):
                 await self.dispatch(message, key, addressed)
                 return
             text = addressed
@@ -207,7 +206,11 @@ class Conversation:
             reference = getattr(message, "reference", None)
             if message.id <= state["proposal_message_id"] or reference and reference.message_id != state["proposal_message_id"]:
                 return
-            if not answer.isdigit() or not 1 <= int(answer) <= len(state["choices"]):
+            if answer in {"suivant", "précédent", "precedent"}:
+                page = state.get("page", 0) + (1 if answer == "suivant" else -1)
+                await self.identify(message, key, state, page)
+                return
+            if not answer.isdigit() or not state.get("page", 0) * 5 < int(answer) <= min(len(state["choices"]), (state.get("page", 0) + 1) * 5):
                 await self.say(message, "Choisis le numéro de l’œuvre, ou « non » pour annuler. Aucun téléchargement n’est lancé.")
                 return
             chosen = state["choices"][int(answer) - 1]
@@ -299,11 +302,7 @@ class Conversation:
             if catalog.get("selected"):
                 intent = identified_intent(intent, catalog["selected"])
             elif catalog.get("items"):
-                lines = ["Quelle œuvre veux-tu ? Réponds avec son numéro :"]
-                for index, item in enumerate(catalog["items"], 1):
-                    lines.append(f"**{index}** — {discord.utils.escape_markdown(item['title'])} ({item.get('year') or 'année inconnue'}) · {'série' if item['kind'] == 'series' else 'film'}")
-                proposal = await self.say(message, "\n".join(lines))
-                self.save(key, {"phase": "identify", "choices": catalog["items"], "intent": intent, "user_request": source, "proposal_message_id": proposal.id})
+                await self.identify(message, key, {"phase": "identify", "choices": catalog["items"], "intent": intent, "user_request": source, "catalog_warning": catalog.get("warning"), "truncated": catalog.get("truncated", False)})
                 return
             elif catalog.get("warning"):
                 await self.say(message, catalog["warning"] + ". Je conserve la recherche par titre.")
@@ -316,6 +315,24 @@ class Conversation:
         intent["quality"] = intent.get("quality") or default_quality()
         await self.lookup(message, key, intent, source)
 
+    async def identify(self, message, key, state, page=0):
+        choices = state["choices"]
+        page = max(0, min(page, (len(choices) - 1) // 5))
+        lines = ["Quelle œuvre veux-tu ? Réponds avec son numéro :"]
+        for index in range(page * 5, min(len(choices), (page + 1) * 5)):
+            item = choices[index]
+            title = discord.utils.escape_markdown(item['title'])[:160]
+            lines.append(f"**{index + 1}** — {title} ({item.get('year') or 'date inconnue'}) · {'série' if item['kind'] == 'series' else 'film'}")
+        if len(choices) > 5:
+            lines.append(f"Page {page + 1}/{(len(choices) + 4) // 5}. Réponds « suivant » ou « précédent » pour voir les autres œuvres.")
+        if state.get("truncated"):
+            lines.append("Plus de vingt œuvres possibles : précise ton titre pour réduire les choix.")
+        if state.get("catalog_warning"):
+            lines.append(state["catalog_warning"][:220])
+        lines.append("Choisir une œuvre ne confirme aucun téléchargement. Réponds « non » pour annuler.")
+        proposal = await self.say(message, "\n".join(lines))
+        self.save(key, {**state, "page": page, "proposal_message_id": proposal.id})
+
     async def lookup(self, message, key, intent, source):
         prefs = Preferences(kind=intent["kind"], target_name=intent["title"].replace("/", " - ").replace("\\", " - ")[:140] + (f" ({intent['year']})" if intent.get("year") else ""),
                             season=intent.get("season", 0), episode=intent.get("episode", 0),
@@ -323,7 +340,7 @@ class Conversation:
         results = await self.plex_factory().request("POST", "/search", json={
             "query": intent["title"], "query_aliases": intent.get("query_aliases", []), "imdb_id": intent.get("imdb_id"), "tmdb_id": intent.get("tmdb_id"), "media_kind": intent["kind"], "indexer": "all", "year": intent.get("year"), "quality": intent.get("quality"),
             "language": intent.get("language"), "season": intent.get("season", 0), "episode": intent.get("episode", 0),
-            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 250, "refined": intent.get("refined", False), "prefer_quality": intent.get("prefer_quality", False)})
+            "rank_preferences": True, "selection_policy": True, "strict_series": True, "min_seeders": intent.get("min_seeders"), "limit": 250, "refined": True, "prefer_quality": intent.get("prefer_quality", False)})
         if not results["items"]:
             options = [q for q in results.get("quality_options", []) if q != intent["quality"]]
             if options:
@@ -343,7 +360,7 @@ class Conversation:
                 await self.say(message, "Résultats écartés : " + "; ".join(f"{labels.get(reason, reason)} : {count}" for reason, count in excluded.items()) + ". Un torrent peut avoir plusieurs motifs d’exclusion.")
             self.save(key, {"phase": "retry", "intent": intent, "user_request": source, "proposal_message_id": message.id})
             await self.say(message, "La recherche a échoué auprès des indexers. Réessaie plus tard." if results.get("errors")
-                           else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus. Réponds « autre recherche » pour affiner.")
+                           else "Je n’ai trouvé aucun torrent compatible avec le titre, la saison/épisode et la qualité demandés. Les résultats AV1 sont exclus. Précise le titre ou les critères pour une nouvelle recherche.")
             return
         state = {"phase": "confirm", "items": results["items"][:5], "intent": intent, "prefs": prefs,
                  "user_request": source,
@@ -371,7 +388,7 @@ class Conversation:
         if len(state["items"]) > 1:
             lines.append("Autres choix :\n" + "\n".join(f"**{i + 1}** — {discord.utils.escape_markdown(item['title'][:130])} (seeds : {item.get('seeders') if str(item.get('seeders') or '').isdigit() else 'inconnus'})"
                           for i, item in enumerate(state["items"])))
-        footer = "Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Réponds **autre recherche** pour affiner. Confirmation valable 5 minutes."
+        footer = "Réponds **oui** pour ajouter ce résultat, **non** pour annuler, ou un **numéro** pour changer de proposition. Confirmation valable 5 minutes."
         proposal = await self.say(message, "\n".join(lines)[:1950 - len(footer) - 1] + "\n" + footer)
         state["proposal_message_id"] = proposal.id
         self.save(key, state)

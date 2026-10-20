@@ -441,6 +441,8 @@ class TorrentOptionView(discord.ui.View):
                 track=True,
                 quality=self.quality,
                 indexer=self.indexer,
+                season=prefs.get("season", 0),
+                episode=prefs.get("episode", 0),
             )
 
 
