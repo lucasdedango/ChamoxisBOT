@@ -21,6 +21,28 @@ def escaped(value, limit=150):
     return discord.utils.escape_markdown(str(value))[:limit]
 
 
+def torrent_menu_details(item):
+    try:
+        seeds = int(item.get('seeders'))
+        if seeds < 0:
+            seeds = None
+    except (ValueError, TypeError):
+        seeds = None
+    badge = '🔥' if seeds is not None and seeds >= 20 else '👍' if seeds is not None and seeds >= 3 else '⚠️'
+    try:
+        size = int(item.get('size'))
+    except (ValueError, TypeError):
+        size = 0
+    size_text = 'taille inconnue'
+    if size > 0:
+        for unit in ('o', 'Kio', 'Mio', 'Gio', 'Tio'):
+            if size < 1024 or unit == 'Tio':
+                size_text = f'{size:.2f} {unit}'
+                break
+            size /= 1024
+    return badge, f"Seeds : {seeds if seeds is not None else 'inconnus'} · {size_text}"
+
+
 def season_date_info(season, brief=False):
     try:
         first_air = date.fromisoformat(season.get('air_date') or '')
@@ -266,6 +288,8 @@ class PrivateSearch:
         size = self.page_count_items()
         if self.stage in {'media', 'torrent', 'season', 'episode'}:
             embed.set_footer(text=f'Page {self.page+1}/{max(1, (size+PAGE_SIZE-1)//PAGE_SIZE)} · {PAGE_SIZE} entrées par page · visible uniquement par toi')
+            if self.stage == 'torrent':
+                embed.set_footer(text=embed.footer.text + ' · Seeds annoncés : 🔥 ≥20 · 👍 3–19 · ⚠️ 0–2 ou inconnus ; connexion non garantie')
         else:
             embed.set_footer(text='Visible uniquement par toi · session valable 5 minutes')
         return embed
@@ -432,8 +456,12 @@ class SearchView(discord.ui.View):
             options = []
             for i in session.visible_indices():
                 row = rows[i]
-                description = (('Série' if row['kind']=='series' else 'Film') + ' · ' + str(row.get('year') or 'date inconnue')) if stage == 'media' else 'Seeds : ' + str(row.get('seeders', '?'))
-                options.append(discord.SelectOption(label=(str(i+1)+'. '+row['title'])[:100], value=str(i), description=description[:100], default=stage=='torrent' and i==session.selected))
+                if stage == 'media':
+                    badge = None
+                    description = ('Série' if row['kind']=='series' else 'Film') + ' · ' + str(row.get('year') or 'date inconnue')
+                else:
+                    badge, description = torrent_menu_details(row)
+                options.append(discord.SelectOption(label=(str(i+1)+'. '+row['title'])[:100], value=str(i), description=description[:100], emoji=badge, default=stage=='torrent' and i==session.selected))
             self.select = discord.ui.Select(placeholder='Choisir une œuvre' if stage=='media' else 'Choisir un torrent', options=options, row=0)
             async def select(interaction):
                 await session.handle(interaction, self.revision, stage, self.select.values[0])

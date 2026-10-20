@@ -35,6 +35,8 @@ Sans `query`, la commande propose un bouton ouvrant le formulaire privé.
 5. Choisis le torrent dans le menu. Consulte sa qualité, sa taille et ses seeds.
 6. Clique **Confirmer l’ajout**. Choisir une œuvre, une saison, une qualité ou un torrent ne confirme pas un téléchargement.
 
+Le menu affiche la taille à côté des seeds et un indicateur : **🔥 au moins 20 seeds**, **👍 de 3 à 19**, **⚠️ de 0 à 2 ou nombre inconnu**. C’est un repère de disponibilité annoncée, pas une note de qualité vidéo ni une garantie de connexion. Ce repère ne change pas le classement des résultats.
+
 **Corriger la recherche** ouvre ta demande initiale préremplie. **Annuler** ferme la recherche sans créer d’ajout. Les contrôles expirent après cinq minutes d’inactivité. Si un ajout n’a pas été confirmé par le module, **Vérifier l’ajout** reprend exactement la même demande pour éviter un doublon ; ne crée pas une nouvelle demande à l’aveugle.
 
 ## Parler au bot dans le salon
