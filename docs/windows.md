@@ -64,19 +64,8 @@ bot pourquoi mon dernier téléchargement semble bloqué ?
 bot quelle différence entre 720p et 1080p ?
 ```
 
-Le bot pose éventuellement une question, puis recherche le titre seul et propose
-le résultat le mieux classé. Répondre `oui` pour ajouter ce résultat, `non` pour
-annuler, ou un numéro pour choisir une autre proposition puis la confirmer.
-Chaque utilisateur possède sa conversation dans chaque salon. La confirmation
-expire après cinq minutes et une réponse adressée à un autre message ne confirme
-pas la proposition. Les autres messages ne déclenchent pas de téléchargement.
-Le mode test reste applicable. Tous les messages commençant par `bot` ou `man` (avec ou sans
-virgule) sont interprétés : recherche, état des téléchargements, état des services
-(administrateurs uniquement), ou discussion. Les commandes de suppression, pause
-et redémarrage ne sont pas exécutées par ce mode. Les commandes slash restent disponibles.
-Une précision comme « plutôt en français » peut affiner une proposition en attente;
-la nouvelle proposition demande une nouvelle confirmation. Pour discuter ou poser
-une nouvelle question, commencer le message par `bot`.
+Le bot demande éventuellement de préciser l’œuvre, puis effectue une recherche complète et propose
+le résultat le mieux classé dans une interface privée. Depuis un message `bot` ou `man`, cliquer sur **Continuer en privé**; `/plex demande` ouvre directement la réponse privée. Choisir les œuvres et torrents dans les menus, naviguer avec les boutons (20 œuvres par page), puis cliquer sur **Confirmer l’ajout** ou **Annuler**. Le bouton **Préciser la demande** ouvre un formulaire privé. Les nouveaux boutons remplacent les réponses « oui », numéros et « suivant » dans le salon. Les sessions et boutons sont réservés à l’auteur et expirent après cinq minutes sans interaction.
 
 Une saison demandée conserve seulement les packs identifiés comme cette saison;
 un épisode demandé conserve seulement cet épisode. Les titres sans saison
@@ -101,7 +90,7 @@ reste possible comme préférence; si le minimum n'est pas disponible, le repli 
 Sans qualité précisée, `SEARCH_DEFAULT_QUALITY=1080p` dans `manager/.env` sert de
 valeur par défaut (2160p, 1080p, 720p ou 480p). Si cette qualité n'est pas disponible,
 le bot demande l'accord pour une autre qualité compatible, puis présente un torrent
-à confirmer séparément : le premier « oui » ne lance aucun téléchargement. Avec
+à confirmer séparément : choisir une qualité dans le menu ne lance aucun téléchargement. Avec
 `/plex demande`, les qualités disponibles sont indiquées pour relancer la commande.
 Sans résultat compatible, aucun ajout n'est proposé. Le formulaire historique
 `/recherchetorrent` conserve son tri manuel.

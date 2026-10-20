@@ -22,7 +22,7 @@ puis confirme explicitement l’ajout. Les commandes historiques restent disponi
 
 Le mode conversation optionnel interprète les messages commençant par `bot` :
 `bot, trouve Grey’s Anatomy S11`, `bot pourquoi mon dernier téléchargement est bloqué ?`
-ou une simple discussion. L'ajout nécessite toujours une réponse `oui` à la proposition.
+ou une simple discussion. La recherche se poursuit en réponse privée via **Continuer en privé**, avec menus et boutons. L'ajout nécessite toujours le bouton **Confirmer l’ajout**.
 Voir le guide Windows pour configurer les salons et activer Message Content Intent.
 Les recherches naturelles privilégient MULTI et les seeds positifs, puis le plus
 petit torrent compatible avec la qualité demandée (1080p par défaut). L'AV1 et
@@ -96,3 +96,5 @@ interaction Discord.
 Voir [la configuration TMDb/Plex](docs/tmdb-plex.md) pour identifier les œuvres, choisir entre homonymes et consulter les films/séries réellement disponibles. TMDb est une API en ligne et ne nécessite aucune installation locale.
 
 Pour les résultats filtrés, interactions Discord expirées et déplacements longs entre disques, voir [le diagnostic recherche/import](docs/diagnostic-recherche-import.md).
+
+Voir [le parcours privé et le nettoyage des logs](docs/recherche-privee.md) pour les menus Discord et le bouton du dashboard.

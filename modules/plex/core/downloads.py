@@ -15,7 +15,7 @@ class Downloads:
         payload = task["payload"]
         self.store.event(Event(source="plex", type=name, task_id=task["id"],
                                channel_id=payload.get("channel_id"), user_id=payload["user_id"],
-                               data=data or {}))
+                               data={**(data or {}), "private": payload.get("private", False)}))
 
     def recover(self):
         # An external side effect and a SQLite commit cannot be atomic.

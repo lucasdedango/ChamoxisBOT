@@ -162,3 +162,48 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         inventory = await self.client.get('/api/library?kind=series&genre=SF')
         self.assertEqual(inventory.status_code, 200)
         self.assertTrue(inventory.json()['authoritative'])
+
+    async def test_clear_logs_needs_confirmation_and_preserves_data(self):
+        paths = ['data/manager/manager.log', 'data/manager/manager.log.1', 'data/plex/plex.log', 'data/plex/plex.log.3', 'bot.log']
+        for name in paths:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('old log\n')
+        database = self.root / 'data/manager/state.sqlite3'
+        database.write_bytes(b'preserve-me')
+        # Unauthorized requests cannot clear anything.
+        self.assertEqual((await self.client.post('/api/logs/clear', json={'confirmed': True}, headers=self.origin)).status_code, 401)
+        await self.login()
+        self.assertEqual((await self.client.post('/api/logs/clear', json={'confirmed': True}, headers=self.origin)).status_code, 403)
+        self.assertEqual((await self.client.post('/api/logs/clear', json={'confirmed': False}, headers=self.headers)).status_code, 400)
+        self.assertEqual((self.root / paths[0]).read_text(), 'old log\n')
+        # An append handle remains valid while clearing (same mode as the live logger).
+        with (self.root / paths[0]).open('a') as writer:
+            result = await self.client.post('/api/logs/clear', json={'confirmed': True}, headers=self.headers)
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(result.json()['count'], 5)
+            for name in paths:
+                self.assertEqual((self.root / name).read_bytes(), b'')
+            writer.write('new event\n')
+            writer.flush()
+            self.assertEqual((self.root / paths[0]).read_text(), 'new event\n')
+        self.assertEqual(database.read_bytes(), b'preserve-me')
+        self.assertIn('admin-secret', (self.root / 'manager/.env').read_text())
+
+    async def test_clear_logs_rejects_symlinks_and_cannot_target_configuration(self):
+        await self.login()
+        with (self.root / 'modules/plex/.env').open('a') as config:
+            config.write('BOT_LOG_FILE=manager/.env\n')
+        response = await self.client.post('/api/logs/clear', json={'confirmed': True}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('admin-secret', (self.root / 'manager/.env').read_text())
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / 'outside.log'
+            target.write_text('outside logs')
+            try:
+                (self.root / 'bot.log').symlink_to(target)
+            except OSError:
+                self.skipTest('Symlinks unavailable on this host')
+            response = await self.client.post('/api/logs/clear', json={'confirmed': True}, headers=self.headers)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(target.read_text(), 'outside logs')

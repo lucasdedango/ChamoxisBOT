@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class Conversation:
-    def __init__(self, store, manager_factory=manager_client, plex_factory=plex_client, clock=time.time):
+    def __init__(self, store, manager_factory=manager_client, plex_factory=plex_client, clock=time.time, private_mode=True):
         self.store, self.manager_factory, self.plex_factory, self.clock = store, manager_factory, plex_factory, clock
+        self.private_mode = private_mode
         self.locks = {}
         self.lock_users = {}
 
@@ -179,6 +180,9 @@ class Conversation:
             return
         if trigger:
             request = trigger[1].strip(' "«»')
+            if not request and self.private_mode:
+                await self.search(message, key, "")
+                return
             if not request:
                 self.save(key, {"phase": "title"})
                 await self.say(message, "Quel film ou quelle série veux-tu chercher ?")
@@ -210,7 +214,7 @@ class Conversation:
                 page = state.get("page", 0) + (1 if answer == "suivant" else -1)
                 await self.identify(message, key, state, page)
                 return
-            if not answer.isdigit() or not state.get("page", 0) * 5 < int(answer) <= min(len(state["choices"]), (state.get("page", 0) + 1) * 5):
+            if not answer.isdigit() or not state.get("page", 0) * 20 < int(answer) <= min(len(state["choices"]), (state.get("page", 0) + 1) * 20):
                 await self.say(message, "Choisis le numéro de l’œuvre, ou « non » pour annuler. Aucun téléchargement n’est lancé.")
                 return
             chosen = state["choices"][int(answer) - 1]
@@ -284,6 +288,18 @@ class Conversation:
         await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/plex operations`. En mode test, rien ne sera téléchargé." + warning)
 
     async def search(self, message, key, request, source=None):
+        if self.private_mode:
+            current = self.store.get(key)
+            if current and current.get("uncertain"):
+                await self.say(message, "L’ajout précédent est incertain. Consulte `/plex operations` avant une nouvelle demande.")
+                return
+            from manager.discord.private_search import SearchInvite
+            self.save(key, {"phase": "private", "user_request": source or request})
+            self.remember(key, "user", "Recherche : " + (source or request))
+            invitation = SearchInvite(message.author.id, source or request, self.manager_factory, self.plex_factory)
+            invitation.message = await message.channel.send("La suite de ta recherche est privée. Clique sur le bouton pour choisir l’œuvre et le torrent.",
+                view=invitation, reference=message, allowed_mentions=discord.AllowedMentions.none())
+            return
         current = self.store.get(key)
         if current and current.get("uncertain"):
             await self.say(message, "L’ajout précédent est incertain ; réponds « oui » pour vérifier cette même demande ou consulte `/plex operations`.")
@@ -319,16 +335,16 @@ class Conversation:
 
     async def identify(self, message, key, state, page=0):
         choices = state["choices"]
-        page = max(0, min(page, (len(choices) - 1) // 5))
+        page = max(0, min(page, (len(choices) - 1) // 20))
         lines = ["Quelle œuvre veux-tu ? Réponds avec son numéro :"]
-        for index in range(page * 5, min(len(choices), (page + 1) * 5)):
+        for index in range(page * 20, min(len(choices), (page + 1) * 20)):
             item = choices[index]
             title = discord.utils.escape_markdown(item['title'])[:160]
             lines.append(f"**{index + 1}** — {title} ({item.get('year') or 'date inconnue'}) · {'série' if item['kind'] == 'series' else 'film'}")
-        if len(choices) > 5:
-            lines.append(f"Page {page + 1}/{(len(choices) + 4) // 5}. Réponds « suivant » ou « précédent » pour voir les autres œuvres.")
+        if len(choices) > 20:
+            lines.append(f"Page {page + 1}/{(len(choices) + 19) // 20}. Réponds « suivant » ou « précédent » pour voir les autres œuvres.")
         if state.get("truncated"):
-            lines.append("Plus de vingt œuvres possibles : précise ton titre pour réduire les choix.")
+            lines.append("Plus de quarante œuvres possibles : précise ton titre pour réduire les choix.")
         if state.get("catalog_warning"):
             lines.append(state["catalog_warning"][:220])
         lines.append("Choisir une œuvre ne confirme aucun téléchargement. Réponds « non » pour annuler.")

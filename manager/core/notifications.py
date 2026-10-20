@@ -45,6 +45,9 @@ class Notifications:
 
     async def step(self):
         for event in self.store.pending_events():
+            if event.get("data", {}).get("private"):
+                self.store.delivered(event["id"])
+                continue
             channel_id = event.get("channel_id") or int(os.getenv("ALERT_CHANNEL_ID", "0") or 0)
             text = notification_text(event)
             if not text or not channel_id or not allowed_channel(channel_id):

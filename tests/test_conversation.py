@@ -33,7 +33,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
                 return {"id": "task-id"}
             raise AssertionError(path)
         self.plex = SimpleNamespace(request=AsyncMock(side_effect=request))
-        self.worker = Conversation(self.store, lambda: self.manager, lambda: self.plex, clock=lambda: self.now)
+        self.worker = Conversation(self.store, lambda: self.manager, lambda: self.plex, clock=lambda: self.now, private_mode=False)
 
     async def asyncTearDown(self):
         self.store.close()
@@ -110,7 +110,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.plex.request.await_count, 0)
         await self.worker.handle(self.message("2005"))
         self.assertIn("2005", self.manager.request.await_args.kwargs["json"]["text"])
-        restored = Conversation(self.store, lambda: self.manager, lambda: self.plex, clock=lambda: self.now)
+        restored = Conversation(self.store, lambda: self.manager, lambda: self.plex, clock=lambda: self.now, private_mode=False)
         await restored.handle(self.message("oui", message_id=2001))
         self.assertEqual(len(self.downloads()), 1)
 
@@ -343,20 +343,20 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.downloads(), [])
 
     async def test_catalog_choices_are_paginated_before_any_torrent_search(self):
-        choices = [{'title': f'Harry Potter {i}', 'kind': 'movies' if i else 'series', 'year': 2000+i, 'tmdb_id': i+1} for i in range(9)]
-        media = {**choices[5], 'tmdb_url': 'https://www.themoviedb.org/movie/6', 'aliases': [choices[5]['title']]}
+        choices = [{'title': f'Harry Potter {i}', 'kind': 'movies' if i else 'series', 'year': 2000+i, 'tmdb_id': i+1} for i in range(24)]
+        media = {**choices[20], 'tmdb_url': 'https://www.themoviedb.org/movie/21', 'aliases': [choices[20]['title']]}
         self.manager.request.side_effect = [{'intent': self.intent}, {'items': choices, 'selected': None}, media]
         with patch.dict(os.environ, {'TMDB_ACCESS_TOKEN': 'test-token'}):
             await self.worker.handle(self.message('bot cherche Harry Potter', message_id=100))
             self.assertIn('Page 1/2', self.channel.send.await_args.args[0])
             self.assertIn('série', self.channel.send.await_args.args[0])
-            await self.worker.handle(self.message('6', message_id=2000))
+            await self.worker.handle(self.message('21', message_id=2000))
             self.plex.request.assert_not_awaited()
             await self.worker.handle(self.message('man suivant', message_id=2001))
             self.assertIn('Page 2/2', self.channel.send.await_args.args[0])
-            self.assertIn('**6**', self.channel.send.await_args.args[0])
-            await self.worker.handle(self.message('6', message_id=2002))
-            self.assertEqual(self.manager.request.await_args.args[1], '/catalog/media/movies/6')
+            self.assertIn('**21**', self.channel.send.await_args.args[0])
+            await self.worker.handle(self.message('21', message_id=2002))
+            self.assertEqual(self.manager.request.await_args.args[1], '/catalog/media/movies/21')
             self.assertTrue(self.plex.request.await_args.kwargs['json']['refined'])
             self.assertEqual(self.downloads(), [])
             await self.worker.handle(self.message('oui', message_id=2003))

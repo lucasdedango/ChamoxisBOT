@@ -113,8 +113,8 @@ class TMDb:
                 warning = str(error)
         if not choices and not warning:
             warning = 'Aucune fiche TMDb trouvée; recherche par titre conservée'
-        return {'configured': True, 'items': choices[:20], 'selected': selected,
-                'truncated': len(choices) > 20, 'warning': warning}
+        return {'configured': True, 'items': choices[:40], 'selected': selected,
+                'truncated': len(choices) > 40, 'warning': warning}
 
     async def details(self, kind, media_id):
         category = 'tv' if kind == 'series' else 'movie'

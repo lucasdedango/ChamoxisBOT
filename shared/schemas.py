@@ -42,6 +42,7 @@ class AddTorrent(Contract):
     channel_id: int | None = None
     prefs: Preferences = Field(default_factory=Preferences)
     confirmed: Literal[True]
+    private: bool = False
 
     @field_validator("link")
     @classmethod

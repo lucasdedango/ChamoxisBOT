@@ -26,7 +26,7 @@ class ConfirmDownload(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True)
         body = AddTorrent(request_id=self.request_id, link=self.link, title=self.title,
-                          user_id=interaction.user.id, channel_id=interaction.channel_id,
+                          user_id=interaction.user.id, channel_id=None, private=True,
                           prefs=Preferences.model_validate(self.prefs), confirmed=True)
         try:
             task = await plex_client().request("POST", "/downloads", json=body.model_dump())
@@ -94,8 +94,8 @@ class IdentifyMedia(NaturalRequest):
     def __init__(self, owner_id, intent, choices):
         super().__init__(owner_id, intent)
         self.clear_items()
-        self.choices = choices
-        select = discord.ui.Select(placeholder="Choisir l’œuvre", options=[discord.SelectOption(label=(item['title'] + ' (' + str(item.get('year') or '?') + ')')[:100], value=str(index), description='Série' if item['kind'] == 'series' else 'Film') for index, item in enumerate(choices)])
+        self.choices = choices[:20]
+        select = discord.ui.Select(placeholder="Choisir l’œuvre", options=[discord.SelectOption(label=(item['title'] + ' (' + str(item.get('year') or '?') + ')')[:100], value=str(index), description='Série' if item['kind'] == 'series' else 'Film') for index, item in enumerate(self.choices)])
         select.callback = self.choose
         self.add_item(select)
         self.select = select
@@ -113,34 +113,8 @@ class IdentifyMedia(NaturalRequest):
 
 
 async def demande(interaction: discord.Interaction, texte: str):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        response = await manager_client().request("POST", "/ai/analyze", json={"text": texte})
-        intent = response["intent"]
-        if os.getenv("TMDB_ACCESS_TOKEN") and intent["title"] != "À préciser":
-            catalog = await manager_client().request("POST", "/catalog/resolve", json={"query": intent["title"], "kind": intent["kind"], "year": intent.get("year")})
-            if catalog.get("selected"):
-                intent = identified_intent(intent, catalog["selected"])
-            elif catalog.get("items"):
-                prompt = "Choisis l’œuvre avant de rechercher les torrents :"
-                if catalog.get("truncated"):
-                    prompt += " Plus de vingt œuvres possibles : précise le titre si nécessaire."
-                if catalog.get("warning"):
-                    prompt += "\n" + catalog["warning"]
-                await interaction.followup.send(prompt, view=IdentifyMedia(interaction.user.id, intent, catalog["items"]), ephemeral=True)
-                return
-            elif catalog.get("warning"):
-                await interaction.followup.send(catalog["warning"] + ". Recherche par titre conservée.", ephemeral=True)
-        if intent.get("clarification"):
-            await interaction.followup.send(intent["clarification"] + " Relance `/plex demande` avec la précision.", ephemeral=True)
-            return
-        description = f"**{intent['title']}** — {intent['kind']} — année {intent.get('year') or '?'} — qualité {intent.get('quality') or default_quality()} — langue {intent.get('language') or 'MULTI préféré'}"
-        if not os.getenv("TMDB_ACCESS_TOKEN"):
-            description += "\n⚠️ Identification TMDb inactive : configure TMDB_ACCESS_TOKEN dans le fichier .env du gestionnaire puis redémarre-le pour choisir entre films et séries."
-        await interaction.followup.send(description, view=NaturalRequest(interaction.user.id, intent),
-                                        ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-    except Exception:
-        await interaction.followup.send("L’IA est indisponible ou sa réponse est invalide. Utilise `/recherchetorrent`.", ephemeral=True)
+    from manager.discord.private_search import PrivateSearch
+    await PrivateSearch(interaction.user.id, texte, manager_client, plex_client).start(interaction)
 
 
 async def operations(interaction: discord.Interaction):

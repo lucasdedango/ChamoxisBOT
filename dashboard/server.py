@@ -13,6 +13,7 @@ from chamoxis_common.http import APIClient
 from chamoxis_common.logging import redact
 from shared.schemas import AddTorrent, Preferences
 from dashboard.settings import Settings, GROUPS
+from dashboard.logs import clear_logs
 from dashboard.updates import Updater
 from manager.ai.selection import default_quality
 from manager.ai.preferences import ground_intent
@@ -30,6 +31,10 @@ class Login(Body):
 class ConfigSave(Body):
     group: str
     changes: dict[str, str]
+
+
+class ClearLogs(Body):
+    confirmed: bool
 
 
 class SearchBody(Body):
@@ -309,6 +314,18 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
                 raise HTTPException(400, str(error)) from error
             except OSError as error:
                 raise HTTPException(409, "Impossible de sauvegarder la configuration; vérifier les droits et l’espace disque") from error
+
+    @app.post("/api/logs/clear", dependencies=[Depends(authenticated)])
+    async def clear_all_logs(body: ClearLogs):
+        if not body.confirmed:
+            raise HTTPException(400, "Confirmation requise pour vider tous les logs")
+        async with mutation_lock:
+            try:
+                return await asyncio.to_thread(clear_logs, root, settings)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
+            except OSError as error:
+                raise HTTPException(409, "Impossible de vider tous les logs; vérifier les droits. Certains fichiers peuvent déjà avoir été vidés") from error
 
     @app.get("/api/logs", dependencies=[Depends(authenticated)])
     async def logs(source: str = "manager", level: str = "", task: str = ""):
