@@ -7,7 +7,7 @@ Chaque recherche affiche dans les logs du module Plex :
 - `Indexer page` : indexer, offset, résultats demandés/reçus et stratégie de recherche complète (`refined=True`).
 - `Search excluded` : titre, indexer, seeds et motifs d'exclusion, sur au plus 50 torrents par recherche.
 - `Search exclusions counts` : total par motif, même au-delà des 50 lignes détaillées.
-- `Search results` : résultats reçus, sans AV1, retenus et erreurs d'indexer.
+- `Search results` : résultats reçus, candidats avant sélection, retenus et erreurs d'indexer.
 
 Les codes sont `av1`, `title`, `media_kind`, `year`, `season`, `episode`, `season_pack`, `quality`, `language` et `seed_preference`. `media_kind` écarte les saisons/épisodes lorsque la demande porte sur un film. `season_pack` signifie que le résultat ne correspond pas à une saison complète demandée. Un torrent peut avoir plusieurs motifs : les totaux ne s'additionnent pas comme des résultats uniques. `seed_preference` signifie que le résultat est passé derrière d'autres candidats annonçant des seeds positifs ou le minimum demandé, pas que tous les torrents à zéro seed sont interdits.
 

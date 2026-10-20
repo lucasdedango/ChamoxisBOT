@@ -25,10 +25,10 @@ def title_tokens(value):
 
 
 def rejection_reasons(item, query, *, year=None, quality=None, language=None, season=0, episode=0,
-                      query_aliases=(), prefer_quality=False, check_title=True, strict_series=True, media_kind=None):
+                      query_aliases=(), prefer_quality=False, check_title=True, strict_series=True, media_kind=None, allow_av1=False):
     title = item.get("title", "")
     reasons = []
-    if is_av1_title(title):
+    if is_av1_title(title) and not allow_av1:
         reasons.append("av1")
     wanted = [title_tokens(q) for q in [query, *query_aliases] if q.strip()]
     if check_title and not any(w <= title_tokens(title) for w in wanted):
@@ -52,14 +52,25 @@ def rejection_reasons(item, query, *, year=None, quality=None, language=None, se
     return reasons
 
 
+def prefer_non_av1(items):
+    alternatives = [item for item in items if not is_av1_title(item.get('title', ''))]
+    if alternatives:
+        return alternatives
+    warning = ('AV1 proposé en dernier recours : aucun torrent d’un autre codec ne respecte ces critères dans les résultats reçus. '
+               'Vérifie la compatibilité de tes appareils ; la lecture ou le transcodage peut être plus exigeant.')
+    return [{**item, 'codec_warning': warning} for item in items]
+
+
 def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=(), prefer_quality=False, media_kind=None):
     """Deterministic natural-search policy; quality is never silently changed."""
     candidates = [item for item in items if not rejection_reasons(item, query, year=year,
-        language=language, season=season, episode=episode, query_aliases=query_aliases, media_kind=media_kind)]
+        language=language, season=season, episode=episode, query_aliases=query_aliases, media_kind=media_kind, allow_av1=True)]
     candidates = rank_results(candidates, query, year=year, season=season, episode=episode, strict_series=True)
     options = [q for q in ("2160p", "1080p", "720p", "480p")
                if any(quality_matches(i.get("title", ""), q) for i in candidates)]
     selected = [i for i in candidates if prefer_quality or quality_matches(i.get("title", ""), quality)]
+    # Codec preference comes before seeds and size, but never relaxes identity or quality.
+    selected = prefer_non_av1(selected)
     positive = [i for i in selected if (seed_count(i) or 0) > 0]
     preferred = [i for i in positive if seed_count(i) >= (min_seeders or 1)]
     warning = None

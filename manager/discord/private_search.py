@@ -206,7 +206,7 @@ class PrivateSearch:
         default = intent.get('prefer_quality', not bool(intent.get('quality')))
         parts.append(quality + (' par défaut ; autres qualités si indisponible' if default else ' demandée'))
         parts.append(intent.get('language') or 'MULTI privilégié')
-        parts.append('AV1 exclu')
+        parts.append('AV1 seulement en dernier recours')
         if intent.get('min_seeders') is not None:
             parts.append(f"minimum souhaité : {intent['min_seeders']} seeds (repli possible avec avertissement)")
         return ' · '.join(str(part) for part in parts)
@@ -257,7 +257,7 @@ class PrivateSearch:
             embed.title = 'Torrent sélectionné — confirmation nécessaire'
             embed.description = f"**{self.selected+1}. {escaped(item['title'], 450)}**\n" + escaped(item.get('selection_reason') or '', 250)
             embed.description += '\nSeeds annoncés : ' + escaped(item.get('seeders') if item.get('seeders') not in (None, '') else 'inconnus', 30)
-            for name in ('availability_warning', 'identity_warning'):
+            for name in ('codec_warning', 'availability_warning', 'identity_warning'):
                 if item.get(name):
                     embed.description += '\n⚠️ ' + escaped(item[name], 300)
             media = self.intent.get('media')

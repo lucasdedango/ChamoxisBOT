@@ -64,7 +64,7 @@ Le mode texte nécessite les salons autorisés et Message Content Intent activé
 - MULTI est privilégié, sauf langue demandée explicitement.
 - Les seeds positifs sont privilégiés, puis le poids réduit parmi les candidats compatibles. Leur nombre ne garantit pas une connexion dans qBittorrent.
 - Si seuls des résultats sans seed positif sont disponibles, un avertissement indique que le téléchargement peut rester longtemps en attente, sans garantie de finir.
-- Les torrents AV1 sont exclus.
+- Les torrents AV1 ne sont proposés que si aucun autre codec ne respecte les critères de la recherche, avec un avertissement de compatibilité avant confirmation. Un torrent non AV1 compatible reste prioritaire même s’il est plus lourd ou n’annonce aucun seed. Le recours à AV1 ne change ni le titre, ni la saison/épisode, ni la langue ou la qualité explicitement demandée.
 - Le titre, l’identité de l’œuvre et la saison/épisode sont vérifiés. L’année de la fiche d’une série est son année de lancement.
 
 ## Comprendre un problème

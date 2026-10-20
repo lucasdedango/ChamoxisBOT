@@ -29,7 +29,7 @@ PAGES = {
         'Utilise **/ia** pour une discussion privée. « cherche » et « ajoute » suivent le même parcours.'),
     'Comprendre un résultat': ('Qualité, disponibilité et problèmes',
         'Qualité demandée, ou 1080p par défaut selon la configuration. MULTI privilégié, seeds positifs '
-        'privilégiés puis taille réduite ; AV1 exclu. Un torrent sans seed peut être proposé avec '
+        'privilégiés puis taille réduite ; AV1 seulement si aucun autre codec compatible n’est trouvé, avec avertissement. Un torrent sans seed peut être proposé avec '
         'avertissement : l’attente peut être longue et le téléchargement n’est pas garanti.\n\n'
         'Le bilan distingue les résultats reçus et ceux retenus. Plusieurs exclusions peuvent concerner '
         'un même torrent. Vérifie le titre, l’année, la saison et la qualité ; utilise **Corriger la recherche**. '

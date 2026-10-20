@@ -244,11 +244,11 @@ async def send_torznab_results(
         title=f"Prowlarr ({selected_indexer_name}): résultats pour \"{query}\""[:256],
         description="\n".join(lines[:25])[:4096],
     )
-    footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 exclu | Filtre qualité: {quality or 'aucun'}"
+    footer = f"Tri: poids décroissant | Popularité: 🔥/⭐/👍 via seeders+grabs | AV1 en dernier recours | Filtre qualité: {quality or 'aucun'}"
     if rank_preferences:
         footer = f"Résultats préférés en premier | Année : {year or 'non précisée'} | Qualité : {quality or 'toutes'} | Langue : {language or 'toutes'} | Alternatives conservées"
     if selection_policy:
-        footer = f"Qualité : {quality} | Langue : {language or 'MULTI préféré'} | Seeds positifs préférés, repli avec avertissement | Taille croissante | AV1 exclu"
+        footer = f"Qualité : {quality} | Langue : {language or 'MULTI préféré'} | Seeds positifs préférés, repli avec avertissement | Taille croissante | AV1 en dernier recours"
     if len(lines) > 25:
         footer += f" | {len(lines) - 25} résultat(s) supplémentaire(s) non affiché(s)"
     embed.set_footer(text=footer)

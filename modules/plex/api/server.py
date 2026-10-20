@@ -14,7 +14,7 @@ from chamoxis_common.security import require_key
 from chamoxis_common.store import Conflict, Store
 from modules.plex.core.downloads import Downloads
 from modules.plex.bridge import deliver_events
-from modules.plex.core.search import rank_results, language_matches, select_results, rejection_reasons, seed_count
+from modules.plex.core.search import rank_results, language_matches, select_results, rejection_reasons, seed_count, prefer_non_av1
 from modules.plex.core.diagnostics import snapshot
 from modules.plex.core.library import Library, LibraryUnavailable
 from modules.plex.core.catalog_search import search_indexer
@@ -93,7 +93,6 @@ def create_app(engine=None, store=None, background=True):
                 errors.append({"indexer": idx, "error": "Search failed; inspect module logs"})
         raw_items = list(items)
         received = len(items)
-        items = [i for i in items if not engine.is_av1_title(i.get("title", ""))]
         compatible = len(items)
         quality_options = []
         if body.selection_policy:
@@ -108,6 +107,9 @@ def create_app(engine=None, store=None, background=True):
             if body.language:
                 items = [i for i in items if language_matches(i.get("title", ""), body.language)]
             items.sort(key=lambda i: engine.parse_size_bytes(i.get("size", "")), reverse=True)
+        if not body.selection_policy:
+            items = prefer_non_av1(items)
+        av1_fallback = bool(items) and all(engine.is_av1_title(item.get('title', '')) for item in items)
         selected_refs = {(i.get("title"), i.get("source"), i.get("enclosure") or i.get("link")) for i in items}
         excluded = Counter()
         details = 0
@@ -118,7 +120,8 @@ def create_app(engine=None, store=None, background=True):
             reasons = rejection_reasons(item, body.query, year=body.year, quality=body.quality,
                 language=body.language, season=body.season, episode=body.episode,
                 query_aliases=body.query_aliases, prefer_quality=body.prefer_quality,
-                media_kind=body.media_kind if body.selection_policy else None, check_title=body.selection_policy, strict_series=body.selection_policy or body.strict_series)
+                media_kind=body.media_kind if body.selection_policy else None, check_title=body.selection_policy, strict_series=body.selection_policy or body.strict_series,
+                allow_av1=av1_fallback)
             if body.rank_preferences and not body.selection_policy:
                 # Legacy ranking treats quality/language as preferences, not hard filters.
                 reasons = [r for r in reasons if r not in {"quality", "language"}]
@@ -136,6 +139,7 @@ def create_app(engine=None, store=None, background=True):
         return {"items": public_results(items[:body.limit]), "errors": errors,
                 "received_count": received, "retained_count": len(items), "returned_count": len(items[:body.limit]),
                 "indexer_count": len(indexers),
+                "av1_fallback": av1_fallback,
                 "excluded_counts": dict(excluded), "seeders_required": body.min_seeders, "quality_options": quality_options}
 
     @app.get("/rss")

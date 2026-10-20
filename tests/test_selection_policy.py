@@ -12,6 +12,37 @@ class SelectionPolicyTests(unittest.TestCase):
     def select(self, items, **kwargs):
         return select_results(items, "Greys Anatomy", season=11, quality="1080p", **kwargs)
 
+    def test_av1_is_fallback_only_after_other_criteria_are_applied(self):
+        av1 = self.item('MULTI.1080p.AV1', seeds='48', size='10')
+        wrong_season = {'title': 'Greys.Anatomy.S12.MULTI.1080p.H265', 'seeders': '99'}
+        selected, _ = self.select([wrong_season, self.item('MULTI.720p.H265'), av1])
+        self.assertEqual(len(selected), 1)
+        self.assertIn('AV1', selected[0]['title'])
+        self.assertIn('dernier recours', selected[0]['codec_warning'])
+        self.assertNotIn('codec_warning', av1)
+
+    def test_non_av1_wins_even_with_fewer_seeds_larger_size_or_no_multi(self):
+        selected, _ = self.select([self.item('MULTI.1080p.AV1', seeds='48', size='10'),
+                                   self.item('FRENCH.1080p.H265', seeds='0', size='1000')])
+        self.assertEqual(len(selected), 1)
+        self.assertNotIn('AV1', selected[0]['title'])
+        self.assertNotIn('codec_warning', selected[0])
+        self.assertIn('availability_warning', selected[0])
+
+    def test_av1_cannot_bypass_identity_language_season_or_quality(self):
+        for query, values in [('Other', {}), ('Greys Anatomy', {'season': 12}),
+                              ('Greys Anatomy', {'quality': '2160p'}), ('Greys Anatomy', {'language': 'anglais'})]:
+            options = dict(season=11, quality='1080p')
+            options.update(values)
+            with self.subTest(query=query, options=options):
+                selected, _ = select_results([self.item('FRENCH.1080p.AV1')], query, **options)
+                self.assertEqual(selected, [])
+
+    def test_default_quality_preference_does_not_override_codec_preference(self):
+        selected, _ = self.select([self.item('MULTI.1080p.AV1'), self.item('MULTI.720p.H265')], prefer_quality=True)
+        self.assertEqual(len(selected), 1)
+        self.assertIn('720p.H265', selected[0]['title'])
+
     def test_multi_then_availability_then_smallest_not_highest_seed_count(self):
         items = [self.item("FRENCH.1080p", "100", "100"),
                  self.item("MULTI.1080p", "50", "3000"),
@@ -98,16 +129,20 @@ class SelectionPolicyAPITests(unittest.IsolatedAsyncioTestCase):
                     body = {"query": "Show", "season": 11, "quality": "1080p", "selection_policy": True}
                     headers = {"X-API-Key": "test-key"}
                     result = (await client.post("/search", json=body, headers=headers)).json()
-                    self.assertEqual(result["items"], [])
+                    self.assertEqual(len(result["items"]), 1)
+                    self.assertTrue(result['av1_fallback'])
+                    self.assertIn('codec_warning', result['items'][0])
                     self.assertEqual(result["received_count"], 4)
-                    self.assertEqual(result["retained_count"], 0)
+                    self.assertEqual(result["retained_count"], 1)
                     self.assertEqual(result["indexer_count"], 1)
-                    self.assertEqual(result["quality_options"], ["720p"])
+                    self.assertEqual(result["quality_options"], ["1080p", "720p"])
                     body["quality"] = "720p"
                     result = (await client.post("/search", json=body, headers=headers)).json()
                     self.assertEqual([r["size"] for r in result["items"]], ["2000", "3000"])
                     self.assertEqual(result["retained_count"], 2)
                     self.assertEqual(result["returned_count"], 2)
+                    self.assertFalse(result['av1_fallback'])
+                    self.assertTrue(all('codec_warning' not in row for row in result['items']))
                     self.assertIn("selection_reason", result["items"][0])
                     self.assertTrue(result["items"][0]["link"].startswith("result:"))
             finally:
@@ -131,14 +166,17 @@ class SeedFallbackTests(unittest.TestCase):
         self.assertEqual(selected[0]['seeders'], '2')
         self.assertNotIn('availability_warning', selected[0])
 
-    def test_fallback_does_not_relax_quality_season_codec_or_explicit_wrong_year(self):
+    def test_av1_fallback_does_not_relax_quality_season_or_explicit_wrong_year(self):
         items = [{'title': 'Below.2025.S01.MULTI.1080p', 'seeders': '0'},
                  {'title': 'Below.2026.S02.MULTI.1080p', 'seeders': '0'},
                  {'title': 'Below.2026.S01.MULTI.1080p.AV1', 'seeders': '0'},
                  {'title': 'Below.2026.S01.MULTI.720p', 'seeders': '0'}]
         selected, options = select_results(items, 'Below', season=1, quality='1080p', year=2026)
-        self.assertEqual(selected, [])
-        self.assertEqual(options, ['720p'])
+        self.assertEqual(len(selected), 1)
+        self.assertIn('AV1', selected[0]['title'])
+        self.assertIn('codec_warning', selected[0])
+        self.assertIn('availability_warning', selected[0])
+        self.assertEqual(options, ['1080p', '720p'])
 
     def test_explicit_seed_minimum_can_fall_back_to_existing_zero_seed(self):
         selected, _ = select_results([{'title': 'Below.S01.MULTI.1080p', 'seeders': '0'}],

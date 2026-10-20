@@ -400,7 +400,7 @@ class Conversation:
             lines.append(f"Œuvre identifiée : {discord.utils.escape_markdown(media['title'])} ({media.get('year') or '?'}) · {media['tmdb_url']}")
         if selected.get("selection_reason"):
             lines.append("Choix selon tes règles : " + discord.utils.escape_markdown(selected["selection_reason"][:250]) + ".")
-        for warning in ("availability_warning", "identity_warning"):
+        for warning in ("codec_warning", "availability_warning", "identity_warning"):
             if selected.get(warning):
                 lines.append("⚠️ " + selected[warning])
         seeds = selected.get("seeders")

@@ -122,7 +122,7 @@ class TrackerRedactionTests(unittest.TestCase):
 
 class SearchDiagnosticTests(unittest.IsolatedAsyncioTestCase):
     async def test_endpoint_explains_filters_and_never_exposes_download_urls(self):
-        titles = ['Below.2026.S01.MULTI.1080p.AV1', 'Below.2025.S01.MULTI.1080p.H265', 'Below.2026.S02.MULTI.1080p.H265', 'Below.2026.S01.MULTI.720p.H265', 'Other.2026.S01.MULTI.1080p.H265']
+        titles = ['Below.2026.S01.MULTI.1080p.AV1', 'Below.2025.S01.MULTI.1080p.H265', 'Below.2026.S02.MULTI.1080p.H265', 'Below.2026.S01.MULTI.720p.H265', 'Other.2026.S01.MULTI.1080p.H265', 'Below.2026.S01.MULTI.1080p.H265']
         items = [{'title': title, 'source': 'Tracker', 'link': f'https://download.example/?apikey=PRIVATE-{n}'} for n, title in enumerate(titles)]
         fake = SimpleNamespace(INDEXER_IDS=['3'], build_torznab_search_url=lambda *a: 'search', fetch_rss=AsyncMock(return_value='xml'), parse_rss_feed=lambda *a: items, indexer_label=lambda _: 'Tracker', is_av1_title=is_av1_title)
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'PLEX_MODULE_API_KEY': 'test-key'}):
@@ -133,7 +133,8 @@ class SearchDiagnosticTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertLogs('modules.plex.api.server', 'INFO') as logs:
                         response = await client.post('/search', headers={'X-API-Key': 'test-key'}, json={'query': 'Below', 'year': 2026, 'season': 1, 'quality': '1080p', 'selection_policy': True})
                 result = response.json()
-                self.assertEqual(result['items'], [])
+                self.assertEqual(len(result['items']), 1)
+                self.assertFalse(result['av1_fallback'])
                 for reason in ('av1', 'year', 'season', 'quality', 'title'):
                     self.assertGreater(result['excluded_counts'][reason], 0)
                 self.assertNotIn('PRIVATE-', '\n'.join(logs.output) + response.text)

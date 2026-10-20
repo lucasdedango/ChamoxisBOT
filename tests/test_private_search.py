@@ -110,6 +110,14 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.stage, 'torrent')
         self.assertIn('Recherche incomplète', str(self.session.embed().to_dict()))
 
+    async def test_av1_fallback_warning_is_shown_before_any_download(self):
+        self.items[0]['codec_warning'] = 'AV1 proposé en dernier recours : vérifie la compatibilité.'
+        await self.session.start(interaction())
+        text = str(self.session.embed().to_dict())
+        self.assertIn('AV1 proposé en dernier recours', text)
+        self.assertIn('AV1 seulement en dernier recours', text)
+        self.assertEqual(self.adds(), [])
+
     async def test_tracker_timeout_does_not_show_previous_result_counts_or_error_secrets(self):
         self.result.update(received_count=24, retained_count=24)
         await self.session.start(interaction())
