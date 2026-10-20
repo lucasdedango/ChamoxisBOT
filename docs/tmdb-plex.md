@@ -63,6 +63,8 @@ Cette stratégie peut être plus lente et reste dépendante de ce que Prowlarr e
 
 La recherche procède désormais par étapes : identifiants annoncés comme pris en charge, puis titre français, anglais lorsqu’il est fourni par TMDb, titre original et une variante supplémentaire au maximum. Chaque titre est essayé avec les précisions saison/année utiles, puis sans celles-ci. Apostrophes, points, accents et séparateurs sont normalisés : `Tad l’explorateur` peut correspondre à `Tad.L.Explorateur`. Les possessifs comme `Grey’s` restent compatibles avec `Greys`.
 
+Avant de passer au titre d’une autre langue, le bot essaie aussi une variante avec points, comme `Tad.l.explorateur.et.la.Lampe.magique`, car certains trackers ne renvoient pas les mêmes releases avec des espaces. Trouver uniquement de l’AV1 ne déclenche pas l’arrêt anticipé : les variantes restantes sont essayées dans la limite totale de douze requêtes par tracker. Si une variante avec points renvoie des torrents non AV1 compatibles et suffisamment de seeds, les autres langues ne sont pas interrogées inutilement.
+
 Après la pagination d’une requête, si un résultat respecte l’identité, le titre, l’année, la saison/épisode, la langue, la qualité souhaitée, les seeds demandés et n’est pas AV1, les requêtes suivantes de ce tracker sont évitées. Des résultats hors sujet ou seulement de repli ne provoquent pas cet arrêt. Les autres trackers configurés restent interrogés. Les recherches sans résultat satisfaisant sont limitées à douze variantes/identifiants par tracker, avec au plus trois pages par requête (250 entrées). Les traductions anglaises sont récupérées dans la même requête de détails TMDb, sans appel séparé.
 
 ## Ambiguïtés TMDb

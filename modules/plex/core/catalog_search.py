@@ -66,6 +66,8 @@ async def search_indexer(engine, store, body, indexer):
         if suffix:
             targeted.append(title + ' ' + suffix)
         targeted.append(title)
+        # Some trackers match release-name punctuation differently from prose.
+        targeted.append(title.replace(' ', '.'))
     # Additional targeted variants are a last resort after all main languages.
     for title in titles:
         season = f"S{body.season:02d}" + (f"E{body.episode:02d}" if body.episode else '') if body.season else ''

@@ -115,9 +115,37 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             return [{'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.1080p.AV1', 'seeders': '48', 'link': 'av1'}]
         body = Search(query="Tad l’explorateur et la Lampe magique", query_aliases=['Tad and the Magic Lamp', 'Tadeo Jones y la lampara maravillosa'], year=2026, quality='1080p', selection_policy=True)
         rows = await search_indexer(self.staged_engine(resolve, calls), self.store, body, '1')
-        self.assertEqual(calls, ['Tad l explorateur et la Lampe magique 2026', 'Tad l explorateur et la Lampe magique', 'Tad and the Magic Lamp 2026'])
+        self.assertEqual(calls, ['Tad l explorateur et la Lampe magique 2026', 'Tad l explorateur et la Lampe magique', 'Tad.l.explorateur.et.la.Lampe.magique', 'Tad and the Magic Lamp 2026'])
         chosen, _ = select_results(rows, body.query, query_aliases=body.query_aliases, year=2026, quality='1080p')
         self.assertEqual([row['link'] for row in chosen], ['english'])
+
+    async def test_av1_only_space_search_continues_to_dotted_release_name_before_other_languages(self):
+        calls = []
+        av1 = {'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.VFF1080p.WEBRip.AV1-MonoDiSC', 'seeders': '48', 'link': 'av1'}
+        x264 = {'title': 'Tad.L.Explorateur.Et.La.Lampe.Magique.2026.MULTI.VFF.1080p.WEB.x264-FS', 'seeders': '3', 'link': 'x264'}
+        x265 = {'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.VFF1080p.WEBRip.x265-GLOP', 'seeders': '2', 'link': 'x265'}
+        def resolve(query):
+            return [av1, x264, x265] if query == 'Tad.l.explorateur.et.la.Lampe.magique' else [av1]
+        body = Search(query="Tad l’explorateur et la Lampe magique", query_aliases=['Tad and the Magic Lamp'],
+                      year=2026, quality='1080p', selection_policy=True)
+        rows = await search_indexer(self.staged_engine(resolve, calls), self.store, body, '1')
+        self.assertEqual(calls, ['Tad l explorateur et la Lampe magique 2026', 'Tad l explorateur et la Lampe magique', 'Tad.l.explorateur.et.la.Lampe.magique'])
+        chosen, _ = select_results(rows, body.query, year=2026, quality='1080p')
+        self.assertEqual({row['link'] for row in chosen}, {'x264', 'x265'})
+        self.assertTrue(all('codec_warning' not in row for row in chosen))
+
+    async def test_av1_remains_fallback_after_all_space_and_dotted_variants_fail_to_find_other_codecs(self):
+        calls = []
+        av1 = {'title': 'Tad.L.Explorateur.et.la.Lampe.Magique.2026.1080p.AV1', 'seeders': '48', 'link': 'av1'}
+        body = Search(query="Tad l’explorateur et la Lampe magique", query_aliases=['Tad and the Magic Lamp'],
+                      year=2026, quality='1080p', selection_policy=True)
+        rows = await search_indexer(self.staged_engine(lambda q: [av1], calls), self.store, body, '1')
+        self.assertIn('Tad.l.explorateur.et.la.Lampe.magique', calls)
+        self.assertIn('Tad.and.the.Magic.Lamp', calls)
+        self.assertLessEqual(len(calls), 12)
+        chosen, _ = select_results(rows, body.query, year=2026, quality='1080p')
+        self.assertEqual(len(chosen), 1)
+        self.assertIn('codec_warning', chosen[0])
 
     async def test_fallback_seed_and_quality_results_do_not_stop_search_and_requests_are_bounded(self):
         calls = []
