@@ -123,7 +123,8 @@ class TMDb:
         imdb = item.get('imdb_id') or item.get('external_ids', {}).get('imdb_id')
         result['imdb_id'] = imdb if isinstance(imdb, str) and re.fullmatch(r'tt\d+', imdb) else None
         result['genres'] = [g['name'] for g in item.get('genres', []) if g.get('name')]
-        result['seasons'] = [{'season': s['season_number'], 'episodes': s.get('episode_count'), 'name': s.get('name', '')}
+        result['seasons'] = [{'season': s['season_number'], 'episodes': s.get('episode_count'), 'name': s.get('name', ''),
+                             'air_date': s.get('air_date')}
                              for s in item.get('seasons', []) if s.get('season_number', 0) > 0]
         alternatives = item.get('alternative_titles', {})
         aliases = [result['title'], result['original_title']] + [a.get('title', '') for a in alternatives.get('results', alternatives.get('titles', [])) if a.get('iso_3166_1') in {'FR', 'US', 'GB'}]

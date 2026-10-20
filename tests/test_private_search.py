@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from chamoxis_common.store import Store
 from manager.discord.conversation import Conversation
-from manager.discord.private_search import PrivateSearch, SearchInvite
+from manager.discord.private_search import PrivateSearch, SearchInvite, season_date_info
 from manager.discord.commands.plex import demande
 from manager.core.notifications import Notifications
 from modules.plex.core.downloads import Downloads
@@ -313,6 +313,49 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.session.request = 'Show'
         self.catalog = {'selected': {'title': 'Show', 'kind': 'series', 'year': 2010, 'tmdb_id': 1,
             'aliases': ['Show'], 'seasons': [{'season': 1, 'name': 'Saison 1', 'episodes': 10}, {'season': 2, 'name': 'Saison 2', 'episodes': 42}]}}
+
+    async def test_season_dates_are_visible_and_future_season_is_not_blocked(self):
+        self.series_without_season()
+        self.catalog['selected']['seasons'][0]['air_date'] = '2022-09-02'
+        self.catalog['selected']['seasons'][1]['air_date'] = '2099-09-02'
+        await self.session.start(interaction())
+        self.assertIn('02/09/2022', self.session.embed().description)
+        self.assertIn('À venir', self.session.view.select.options[1].description)
+        self.session.view.select._values = ['2']
+        await self.session.view.select.callback(interaction())
+        self.assertIn('Première diffusion prévue le 02/09/2099', str(self.session.embed().to_dict()))
+        self.plex.request.assert_not_awaited()
+        await self.button('Saison entière').callback(interaction())
+        self.assertEqual(self.session.stage, 'torrent')
+        self.assertEqual(self.plex.request.await_args.kwargs['json']['season'], 2)
+        self.assertIn('saison à venir', str(self.session.embed().to_dict()))
+        self.assertEqual(self.adds(), [])
+
+    async def test_explicit_season_also_shows_its_first_air_date(self):
+        self.series_without_season()
+        self.session.request = 'Show S02'
+        self.catalog['selected']['seasons'][1]['air_date'] = '2024-08-29'
+        fake = interaction()
+        await self.session.start(fake)
+        text = str(self.session.embed().to_dict())
+        self.assertIn('29/08/2024', text)
+        self.assertIn('ne garantit pas que la saison complète', text)
+        progress = [call.kwargs.get('content') or '' for call in fake.edit_original_response.await_args_list]
+        self.assertTrue(any('29/08/2024' in row and 'Recherche complète' in row for row in progress))
+
+    def test_unknown_or_invalid_date_does_not_claim_a_season_is_unreleased(self):
+        for value in (None, '', 'invalid', '2026-02-30'):
+            self.assertIn('non annoncée', season_date_info({'air_date': value}))
+            self.assertNotIn('à venir', season_date_info({'air_date': value}))
+
+    async def test_twenty_season_dates_fit_discord_embed_limits(self):
+        self.series_without_season()
+        self.catalog['selected']['seasons'] = [{'season': i, 'name': 'Long season name ' * 8,
+            'episodes': 42, 'air_date': '2022-09-02'} for i in range(1, 21)]
+        await self.session.start(interaction())
+        self.assertEqual(len(self.session.view.select.options), 20)
+        self.assertLessEqual(len(self.session.embed().description), 4096)
+        self.assertLessEqual(len(self.session.embed()), 6000)
 
     async def test_unspecified_series_requires_season_and_whole_or_episode_before_search(self):
         self.series_without_season()

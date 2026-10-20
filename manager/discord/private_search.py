@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import time
+from datetime import date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import uuid4
 import discord
 from manager.ai.catalog import identified_intent
@@ -17,6 +19,26 @@ PAGE_SIZE = 20
 
 def escaped(value, limit=150):
     return discord.utils.escape_markdown(str(value))[:limit]
+
+
+def season_date_info(season, brief=False):
+    try:
+        first_air = date.fromisoformat(season.get('air_date') or '')
+    except (ValueError, TypeError):
+        return 'Date non annoncée' if brief else 'Date de première diffusion non annoncée dans TMDb.'
+    try:
+        today = datetime.now(ZoneInfo('Europe/Paris')).date()
+    except ZoneInfoNotFoundError:
+        # Windows may not have the IANA database; use the server's local calendar.
+        today = date.today()
+    formatted = first_air.strftime('%d/%m/%Y')
+    if first_air > today:
+        if brief:
+            return f'À venir · {formatted}'
+        return f'Première diffusion prévue le {formatted} selon TMDb : saison à venir.'
+    if brief:
+        return f'Début de diffusion : {formatted}'
+    return f'Première diffusion le {formatted} selon TMDb ; cela ne garantit pas que la saison complète soit disponible.'
 
 
 class PrivateSearch:
@@ -132,7 +154,15 @@ class PrivateSearch:
         if self.view:
             self.view.stop()
         summary = self.understood()
-        await interaction.edit_original_response(content=(summary + '\n' if summary else '') + text, embed=None, view=None, allowed_mentions=discord.AllowedMentions.none())
+        season_info = self.season_information()
+        await interaction.edit_original_response(content=(summary + '\n' if summary else '') + (season_info + '\n' if season_info else '') + text, embed=None, view=None, allowed_mentions=discord.AllowedMentions.none())
+
+    def season_information(self):
+        number = self.intent.get('season')
+        if self.intent.get('kind') != 'series' or not number:
+            return ''
+        season = next((s for s in self.intent.get('media', {}).get('seasons', []) if s.get('season') == number), None)
+        return f'S{number:02d} — ' + season_date_info(season or {})
 
     def understood(self):
         title = self.intent.get('title')
@@ -188,7 +218,7 @@ class PrivateSearch:
             for index in self.visible_indices():
                 season = self.seasons[index]
                 count = season.get('episodes')
-                rows.append(f"**S{season['season']:02d}** — {escaped(season.get('name') or 'Saison '+str(season['season']), 100)} · {str(count)+' épisodes annoncés' if isinstance(count, int) else 'nombre d’épisodes inconnu'}")
+                rows.append(f"**S{season['season']:02d}** — {escaped(season.get('name') or 'Saison '+str(season['season']), 60)} · {str(count)+' épisodes annoncés' if isinstance(count, int) else 'nombre d’épisodes inconnu'}\n{season_date_info(season, brief=True)}")
             embed.description = '\n'.join(rows) + '\nChoisis la saison avant la recherche de torrents.'
         elif self.stage == 'scope':
             embed.title = f"Saison {self.intent['season']} : entière ou un épisode ?"
@@ -219,6 +249,8 @@ class PrivateSearch:
         if self.warning and self.stage not in {'done', 'cancelled'}:
             embed.add_field(name='Information', value=escaped(self.warning, 650), inline=False)
         if self.stage not in {'done', 'cancelled'}:
+            if self.season_information():
+                embed.add_field(name='Diffusion de la saison', value=self.season_information(), inline=False)
             if self.understood():
                 embed.add_field(name='Demande comprise', value=self.understood(), inline=False)
                 embed.add_field(name='Critères utilisés', value=escaped(self.criteria(), 650), inline=False)
@@ -410,7 +442,7 @@ class SearchView(discord.ui.View):
                 if stage == 'season':
                     season = session.seasons[index]
                     label = f"S{season['season']:02d} — {season.get('name') or 'Saison '+str(season['season'])}"
-                    description = str(season.get('episodes')) + ' épisodes annoncés' if isinstance(season.get('episodes'), int) else 'Nombre d’épisodes inconnu'
+                    description = season_date_info(season, brief=True)
                     value = str(season['season'])
                 else:
                     label, description, value = f"S{session.intent['season']:02d}E{index+1:02d}", 'Épisode '+str(index+1), str(index+1)

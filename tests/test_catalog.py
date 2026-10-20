@@ -68,6 +68,16 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['items'], [])
         self.assertIn('HTTP 401', result['warning'])
 
+    async def test_series_details_preserve_each_season_first_air_date(self):
+        tmdb = TMDb(self.store, 'token')
+        tmdb.get = AsyncMock(return_value={'id': 1, 'name': 'Show', 'seasons': [
+            {'season_number': 1, 'episode_count': 8, 'air_date': '2022-09-02'},
+            {'season_number': 2, 'episode_count': 8, 'air_date': None},
+            {'season_number': 0, 'episode_count': 1, 'air_date': None}]})
+        details = await tmdb.details('series', 1)
+        self.assertEqual([s['air_date'] for s in details['seasons']], ['2022-09-02', None])
+        self.assertEqual([s['season'] for s in details['seasons']], [1, 2])
+
     async def test_real_plex_inventory_genres_ids_cache_and_invalid_section(self):
         library = Library(self.store, self.url, 'plex-test', series='2')
         result = await library.browse('series', 'SF')
