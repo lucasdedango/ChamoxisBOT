@@ -353,9 +353,10 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_deduplication_and_offline_retention(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DISCORD_NOTIFICATION_CHANNEL_IDS": "123"}):
             store = Store(Path(tmp) / "state.sqlite3")
-            event = Event(source="plex", type="plex.import.completed", channel_id=123)
+            event = Event(source="plex", type="plex.import.completed", channel_id=123,
+                          data={'moved_files': 1, 'media_title': 'Film', 'refresh': [{'ok': True}]})
             store.event(event)
-            channel = SimpleNamespace(send=AsyncMock())
+            channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=987)))
             bot = SimpleNamespace(is_ready=lambda: False, get_channel=lambda _: channel)
             worker = Notifications(store, bot)
             await worker.step()

@@ -103,6 +103,7 @@
     "tests/test_discord_access.py",
     "tests/test_discord_flow.py",
     "tests/test_entrypoints.py",
+    "tests/test_import_announcements.py",
     "tests/test_network_integration.py",
     "tests/test_plex_engine.py",
     "tests/test_private_search.py",

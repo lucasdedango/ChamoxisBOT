@@ -87,6 +87,10 @@ Le bot essaie les identifiants disponibles puis les titres français, anglais et
 
 `/telechargements` montre uniquement tes demandes, même si tu es administrateur. Le bouton actualise les états et, lorsqu’elle est disponible, la progression qBittorrent des cinq demandes les plus récentes. Jusqu’à douze demandes sont affichées. Les demandes privées n’envoient pas de notifications de progression dans un salon public. Les administrateurs conservent une vue globale via leurs outils et le dashboard.
 
+Une fois l’import terminé avec des fichiers importés, le bot publie une annonce de nouveau film ou de nouveaux épisodes dans le salon de nouveautés configuré. Elle ne contient ni demandeur, ni identifiant de tâche, ni chemins locaux. Un même suivi réutilise sa propre annonce ; la progression ne la remplace pas. Une actualisation Plex acceptée peut encore prendre un instant avant que le contenu soit visible. Si l’actualisation échoue ou n’a pas été confirmée, l’annonce le précise. Les simulations et imports sans fichier ne produisent pas d’annonce de nouveau contenu.
+
+Dans `manager/.env`, renseigner `ALERT_CHANNEL_ID` avec le salon de nouveautés et inclure ce même identifiant dans `DISCORD_NOTIFICATION_CHANNEL_IDS`. Ces réglages sont également disponibles dans le dashboard. Le bot doit pouvoir voir le salon et y envoyer des messages. Pour les recherches privées, aucun autre salon n’est choisi automatiquement si cette configuration manque. Les logs indiquent alors pourquoi l’annonce est ignorée. Après mise à jour, redémarrer le manager et le module Plex ; les anciens événements déjà traités ne sont pas réannoncés.
+
 ## Administrer les utilisateurs
 
 Seuls les identifiants présents dans `DISCORD_ADMIN_IDS` peuvent gérer les accès. Les permissions « Administrateur » du serveur Discord ne remplacent pas cette liste. Aucun droit d’administration ne peut être accordé avec les commandes d’ajout d’utilisateur.

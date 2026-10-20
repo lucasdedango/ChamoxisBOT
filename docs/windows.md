@@ -48,7 +48,11 @@ Dans `manager/.env`, renseigner les salons autorisés :
 DISCORD_CONVERSATION_CHANNEL_IDS=123456789012345678
 ```
 
-Ajouter ces salons à `DISCORD_NOTIFICATION_CHANNEL_IDS` pour recevoir le suivi.
+Le suivi détaillé des recherches privées reste dans `/telechargements` et le dashboard.
+Pour annoncer les nouveaux imports dans un salon, renseigner `ALERT_CHANNEL_ID`
+et ajouter ce même identifiant à `DISCORD_NOTIFICATION_CHANNEL_IDS` dans `manager/.env`.
+Le bot annonce uniquement la fin d’import et précise si l’actualisation Plex a échoué
+ou n’est pas confirmée. Aucun message de nouveauté n’est publié en mode test.
 Dans Discord Developer Portal → application → **Bot** → **Privileged Gateway
 Intents**, activer **Message Content Intent**, puis redémarrer le gestionnaire.
 Le bot demande cet intent uniquement si des salons conversationnels sont configurés.

@@ -35,7 +35,9 @@ PAGES = {
         'un même torrent. Vérifie le titre, l’année, la saison et la qualité ; utilise **Corriger la recherche**. '
         'Une panne de service est signalée séparément : utilise **Réessayer**.\n\n'
         'Une date de première diffusion passée ne garantit pas qu’une saison complète soit disponible. '
-        'Consulte **/telechargements** pour suivre tes demandes ; un ajout incertain se vérifie avec le même bouton.'),
+        'Consulte **/telechargements** pour suivre tes demandes ; un ajout incertain se vérifie avec le même bouton. '
+        'La progression reste privée ; la fin d’import est annoncée dans le salon de nouveautés configuré. '
+        'Une actualisation Plex échouée ou non confirmée est signalée sans promettre que le contenu est déjà visible.'),
     'Administration': ('Accès et administration',
         'Réservé aux identifiants **DISCORD_ADMIN_IDS** configurés :\n'
         '• `/admin utilisateurs ajouter membre:@membre`\n'

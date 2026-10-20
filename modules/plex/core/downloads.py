@@ -13,9 +13,15 @@ class Downloads:
 
     def emit(self, task, name, data=None):
         payload = task["payload"]
+        metadata = {}
+        if name == 'plex.import.completed':
+            prefs = payload.get('prefs') or {}
+            metadata = {'media_title': prefs.get('target_name') or payload.get('title') or (data or {}).get('name', ''),
+                        'media_kind': (data or {}).get('media_kind') or prefs.get('kind', 'movies'),
+                        'season': prefs.get('season', 0), 'episode': prefs.get('episode', 0)}
         self.store.event(Event(source="plex", type=name, task_id=task["id"],
                                channel_id=payload.get("channel_id"), user_id=payload["user_id"],
-                               data={**(data or {}), "private": payload.get("private", False)}))
+                               data={**(data or {}), **metadata, "private": payload.get("private", False)}))
 
     def recover(self):
         # An external side effect and a SQLite commit cannot be atomic.
@@ -130,7 +136,7 @@ class Downloads:
             if active and section:
                 ok, _ = await self.engine.plex_refresh(section)
                 refresh.append({"section": section, "ok": ok})
-        result.update(message=message, moved_files=count, refresh=refresh)
+        result.update(message=message, moved_files=count, refresh=refresh, media_kind='series' if series else 'movies')
         self.store.transition(task["id"], "completed", result)
         self.emit(task, "plex.import.completed", result)
 

@@ -444,7 +444,7 @@ class PrivateSearch:
             await self.show(interaction)
             return
         self.task_id = str(task['id'])
-        self.stage, self.notice = 'done', f"Demande enregistrée : {task['id']}. Suivi disponible dans /telechargements. Aucun suivi public n’est envoyé pour cette demande. Le mode test du module est respecté."
+        self.stage, self.notice = 'done', f"Demande enregistrée : {task['id']}. Suivi privé disponible dans /telechargements. Seule la fin de l’import est annoncée dans le salon de nouveautés configuré. Le mode test du module est respecté."
         await self.show(interaction)
 
 

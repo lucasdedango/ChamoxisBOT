@@ -39,18 +39,57 @@ def notification_text(event):
     return redact(f"{templates[kind]} : {details}\nTâche : {event.get('task_id') or event['id']}")[:1800]
 
 
+def import_announcement(event):
+    data = event.get('data', {})
+    count = data.get('moved_files')
+    if not isinstance(count, int) or count <= 0:
+        return None
+    series = data.get('media_kind') == 'series'
+    title = str(data.get('media_title') or '')
+    # This public message never uses import logs, paths, task IDs or requesters.
+    if not title or any(char in title for char in ('/', '\\', '\n', '\r')):
+        title = 'Série' if series else 'Film'
+    title = discord.utils.escape_markdown(redact(title)[:250])
+    season, episode = data.get('season'), data.get('episode')
+    season = season if isinstance(season, int) and 0 < season <= 100 else 0
+    episode = episode if isinstance(episode, int) and 0 < episode <= 1000 else 0
+    if series:
+        prefix = '📺 Nouvel épisode importé pour Plex' if episode else '📺 Nouveaux épisodes importés pour Plex'
+        scope = f' — S{season:02d}E{episode:02d}' if season and episode else f' — saison {season}' if season else ''
+    else:
+        prefix, scope = '🎬 Nouveau film importé pour Plex', ''
+    text = f'{prefix} : **{title}**{scope}.'
+    refresh = data.get('refresh') or []
+    if refresh and all(row.get('ok') is True for row in refresh):
+        text += '\nActualisation Plex demandée ; l’affichage peut prendre un instant.'
+    elif any(row.get('ok') is False for row in refresh):
+        text += '\n⚠️ L’actualisation de Plex a échoué : sa disponibilité dans la bibliothèque reste à vérifier.'
+    else:
+        text += '\n⚠️ Actualisation Plex non confirmée ; vérifie la bibliothèque.'
+    return text
+
+
 class Notifications:
     def __init__(self, store, bot):
         self.store, self.bot = store, bot
 
     async def step(self):
         for event in self.store.pending_events():
-            if event.get("data", {}).get("private"):
+            announcement = event['type'] == 'plex.import.completed' and event.get('source') == 'plex'
+            private = event.get('data', {}).get('private')
+            if private and not announcement:
                 self.store.delivered(event["id"])
                 continue
-            channel_id = event.get("channel_id") or int(os.getenv("ALERT_CHANNEL_ID", "0") or 0)
-            text = notification_text(event)
+            alert_channel = int(os.getenv('ALERT_CHANNEL_ID', '0') or 0)
+            if announcement:
+                channel_id = alert_channel or (event.get('channel_id') if not private else 0)
+                text = import_announcement(event)
+            else:
+                channel_id = event.get('channel_id') or alert_channel
+                text = notification_text(event)
             if not text or not channel_id or not allowed_channel(channel_id):
+                if announcement and text:
+                    logger.warning('Plex import announcement skipped task=%s channel=%s reason=missing_or_disallowed_channel; configure ALERT_CHANNEL_ID and DISCORD_NOTIFICATION_CHANNEL_IDS', event.get('task_id'), channel_id)
                 self.store.delivered(event["id"])
                 continue
             if not self.bot.is_ready():
@@ -63,8 +102,8 @@ class Notifications:
                 continue
             try:
                 channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                message_key = f"progress_message:{channel_id}:{event.get('task_id')}"
-                existing = self.store.get(message_key) if event.get("task_id") else None
+                message_key = f"import_announcement:{channel_id}:{event.get('task_id') or event['id']}" if announcement else f"progress_message:{channel_id}:{event.get('task_id')}"
+                existing = self.store.get(message_key) if announcement or event.get("task_id") else None
                 if existing:
                     try:
                         message = await channel.fetch_message(existing)
@@ -73,7 +112,7 @@ class Notifications:
                         message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
                 else:
                     message = await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
-                if event.get("task_id"):
+                if announcement or event.get("task_id"):
                     self.store.set(message_key, message.id)
                 self.store.delivered(event["id"])
             except Exception as error:
