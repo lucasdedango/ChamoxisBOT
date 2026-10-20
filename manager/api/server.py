@@ -43,7 +43,7 @@ def create_app(store=None, registry=None, gateway=None, background=True):
 
     @app.get("/health", dependencies=[Depends(auth)])
     async def health():
-        return {"status": "ok", "version": 1, "discord": getattr(app.state, "discord_status", "disabled")}
+        return {"status": "ok", "version": 1, "discord": getattr(app.state, "discord_status", "disabled"), "tmdb_configured": bool(catalog.token)}
 
     @app.get("/services", dependencies=[Depends(auth)])
     async def services():

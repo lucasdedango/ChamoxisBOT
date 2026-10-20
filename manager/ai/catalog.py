@@ -1,4 +1,5 @@
 """TMDb metadata: fixed upstream, bounded requests, persistent cache, no actions."""
+import logging
 import asyncio
 import os
 import re
@@ -23,6 +24,9 @@ def library_filters(text):
     return {'kind': kind, 'genre': 'science-fiction' if science else '', 'query': ''}
 
 
+logger = logging.getLogger(__name__)
+
+
 class CatalogUnavailable(RuntimeError):
     pass
 
@@ -32,6 +36,8 @@ class TMDb:
         self.store = store
         self.token = os.getenv('TMDB_ACCESS_TOKEN', '') if token is None else token
         self.language = os.getenv('TMDB_LANGUAGE', 'fr-FR')
+        if not self.token:
+            logger.warning('TMDb identification disabled: TMDB_ACCESS_TOKEN is missing from the running manager; env_file=%s', os.getenv('MANAGER_ENV_FILE', '.env'))
         self.base_url = base_url.rstrip('/')
         self.lock = asyncio.Semaphore(3)
 

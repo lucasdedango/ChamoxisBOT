@@ -72,3 +72,7 @@ Discord affiche les fiches par pages de cinq : répondre **suivant** ou **préc�
 Si une catégorie TMDb est indisponible, le bot ne sélectionne pas automatiquement l’unique résultat de l’autre catégorie. Si aucune fiche ne correspond à l’année demandée, il demande un choix avec un avertissement. Le choix de fiche mène ensuite aux torrents, puis à une confirmation d’ajout distincte.
 
 Les logs `Indexer page` indiquent offset, nombre demandé et nombre reçu pour diagnostiquer la pagination.
+
+### Vérifier que TMDb est actif dans le gestionnaire
+
+Après un changement de dossier, copier aussi le jeton TMDb dans le fichier `.env` effectivement chargé par le gestionnaire (normalement `manager/.env` via `start.bat`), puis redémarrer le gestionnaire. Le dashboard peut voir un jeton enregistré dans un fichier sans que le processus déjà démarré l’ait chargé. Si le jeton manque dans le processus, les propositions de torrents et les logs de démarrage indiquent désormais explicitement « Identification TMDb inactive ». La route authentifiée `/health` du gestionnaire expose aussi `tmdb_configured`, sans dévoiler le jeton. Sans TMDb, la recherche utilise seulement le titre et ne peut pas présenter le choix des fiches films/séries en ligne.

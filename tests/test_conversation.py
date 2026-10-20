@@ -361,3 +361,9 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.downloads(), [])
             await self.worker.handle(self.message('oui', message_id=2003))
             self.assertEqual(len(self.downloads()), 1)
+
+    async def test_missing_tmdb_configuration_is_visible_in_proposal(self):
+        with patch.dict(os.environ, {'TMDB_ACCESS_TOKEN': ''}):
+            await self.worker.handle(self.message('bot cherche Harry Potter', message_id=100))
+        self.assertIn('Identification TMDb inactive', self.channel.send.await_args.args[0])
+        self.assertEqual(self.downloads(), [])

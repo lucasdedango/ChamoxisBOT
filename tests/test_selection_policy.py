@@ -140,3 +140,16 @@ class SeedFallbackTests(unittest.TestCase):
                                     'Below', season=1, quality='1080p', min_seeders=1)
         self.assertEqual(len(selected), 1)
         self.assertIn('Aucun torrent compatible', selected[0]['availability_warning'])
+
+    def test_movie_request_does_not_offer_episodes_from_related_series(self):
+        from modules.plex.core.search import rejection_reasons
+        items = [
+            {'title': 'Harry.Potter.Wizards.of.Baking.S02E02.MULTI.1080p.H264', 'size': '10', 'seeders': '20'},
+            {'title': 'Harry.Potter.et.la.Chambre.des.Secrets.2002.MULTI.1080p.H264', 'size': '100', 'seeders': '2'},
+        ]
+        selected, _ = select_results(items, 'Harry Potter', media_kind='movies', quality='1080p')
+        self.assertEqual(len(selected), 1)
+        self.assertIn('Chambre.des.Secrets', selected[0]['title'])
+        self.assertIn('media_kind', rejection_reasons(items[0], 'Harry Potter', media_kind='movies'))
+        series, _ = select_results(items[:1], 'Harry Potter', media_kind='series', quality='1080p', season=2, episode=2)
+        self.assertEqual(len(series), 1)

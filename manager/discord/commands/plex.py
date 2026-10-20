@@ -135,6 +135,8 @@ async def demande(interaction: discord.Interaction, texte: str):
             await interaction.followup.send(intent["clarification"] + " Relance `/plex demande` avec la précision.", ephemeral=True)
             return
         description = f"**{intent['title']}** — {intent['kind']} — année {intent.get('year') or '?'} — qualité {intent.get('quality') or default_quality()} — langue {intent.get('language') or 'MULTI préféré'}"
+        if not os.getenv("TMDB_ACCESS_TOKEN"):
+            description += "\n⚠️ Identification TMDb inactive : configure TMDB_ACCESS_TOKEN dans le fichier .env du gestionnaire puis redémarre-le pour choisir entre films et séries."
         await interaction.followup.send(description, view=NaturalRequest(interaction.user.id, intent),
                                         ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
     except Exception:

@@ -221,7 +221,7 @@ def create_app(root=None, client_factory=APIClient, updater=None, launch_token=N
         intent = (await query("manager", "/ai/analyze", "POST", json={"text": "Ajoute " + body.text}))["intent"]
         intent = ground_intent(intent, body.text)
         configured = settings.values("manager")
-        warning = None
+        warning = None if configured.get("TMDB_ACCESS_TOKEN") else "Identification TMDb inactive : renseigne TMDB_ACCESS_TOKEN dans manager/.env et redémarre le gestionnaire pour choisir entre les œuvres."
         if configured.get("TMDB_ACCESS_TOKEN"):
             if body.media_id:
                 if body.media_kind not in {"movies", "series"}:

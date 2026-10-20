@@ -98,7 +98,7 @@ def create_app(engine=None, store=None, background=True):
         quality_options = []
         if body.selection_policy:
             items, quality_options = select_results(items, body.query, year=body.year, quality=body.quality,
-                language=body.language, season=body.season, episode=body.episode, min_seeders=body.min_seeders, query_aliases=body.query_aliases, prefer_quality=body.prefer_quality)
+                language=body.language, season=body.season, episode=body.episode, min_seeders=body.min_seeders, query_aliases=body.query_aliases, prefer_quality=body.prefer_quality, media_kind=body.media_kind)
         elif body.rank_preferences:
             items = rank_results(items, body.query, year=body.year, quality=body.quality, language=body.language,
                                  season=body.season, episode=body.episode, strict_series=body.strict_series,
@@ -118,7 +118,7 @@ def create_app(engine=None, store=None, background=True):
             reasons = rejection_reasons(item, body.query, year=body.year, quality=body.quality,
                 language=body.language, season=body.season, episode=body.episode,
                 query_aliases=body.query_aliases, prefer_quality=body.prefer_quality,
-                check_title=body.selection_policy, strict_series=body.selection_policy or body.strict_series)
+                media_kind=body.media_kind if body.selection_policy else None, check_title=body.selection_policy, strict_series=body.selection_policy or body.strict_series)
             if body.rank_preferences and not body.selection_policy:
                 # Legacy ranking treats quality/language as preferences, not hard filters.
                 reasons = [r for r in reasons if r not in {"quality", "language"}]

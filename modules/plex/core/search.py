@@ -25,7 +25,7 @@ def title_tokens(value):
 
 
 def rejection_reasons(item, query, *, year=None, quality=None, language=None, season=0, episode=0,
-                      query_aliases=(), prefer_quality=False, check_title=True, strict_series=True):
+                      query_aliases=(), prefer_quality=False, check_title=True, strict_series=True, media_kind=None):
     title = item.get("title", "")
     reasons = []
     if is_av1_title(title):
@@ -37,6 +37,8 @@ def rejection_reasons(item, query, *, year=None, quality=None, language=None, se
     if check_title and year and years and year not in years:
         reasons.append("year")
     numbers = series_numbers(title)
+    if media_kind == "movies" and numbers:
+        reasons.append("media_kind")
     if strict_series and season and not any(s == season for s, _ in numbers):
         reasons.append("season")
     if strict_series and episode and not any(s == season and e == episode for s, e in numbers):
@@ -50,10 +52,10 @@ def rejection_reasons(item, query, *, year=None, quality=None, language=None, se
     return reasons
 
 
-def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=(), prefer_quality=False):
+def select_results(items, query, *, year=None, quality=None, language=None, season=0, episode=0, min_seeders=None, query_aliases=(), prefer_quality=False, media_kind=None):
     """Deterministic natural-search policy; quality is never silently changed."""
     candidates = [item for item in items if not rejection_reasons(item, query, year=year,
-        language=language, season=season, episode=episode, query_aliases=query_aliases)]
+        language=language, season=season, episode=episode, query_aliases=query_aliases, media_kind=media_kind)]
     candidates = rank_results(candidates, query, year=year, season=season, episode=episode, strict_series=True)
     options = [q for q in ("2160p", "1080p", "720p", "480p")
                if any(quality_matches(i.get("title", ""), q) for i in candidates)]

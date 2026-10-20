@@ -306,6 +306,8 @@ class Conversation:
                 return
             elif catalog.get("warning"):
                 await self.say(message, catalog["warning"] + ". Je conserve la recherche par titre.")
+        if not os.getenv("TMDB_ACCESS_TOKEN"):
+            intent["catalog_warning"] = "Identification TMDb inactive : configure TMDB_ACCESS_TOKEN dans le fichier .env du gestionnaire puis redémarre-le pour choisir entre les films et séries. La recherche actuelle utilise uniquement le titre."
         if intent.get("clarification"):
             self.save(key, {"phase": "clarify", "request": request, "user_request": source})
             await self.say(message, intent["clarification"])
@@ -354,7 +356,7 @@ class Conversation:
                                 "suggested": suggested, "proposal_message_id": proposal.id})
                 self.remember(key, "assistant", prompt)
                 return
-            labels = {"av1": "AV1", "title": "titre différent", "year": "année différente", "season": "saison différente ou absente", "episode": "épisode différent ou absent", "season_pack": "saison complète absente", "quality": "qualité différente", "language": "langue non repérée"}
+            labels = {"av1": "AV1", "title": "titre différent", "media_kind": "épisode/saison au lieu d’un film", "year": "année différente", "season": "saison différente ou absente", "episode": "épisode différent ou absent", "season_pack": "saison complète absente", "quality": "qualité différente", "language": "langue non repérée"}
             excluded = results.get("excluded_counts", {})
             if excluded:
                 await self.say(message, "Résultats écartés : " + "; ".join(f"{labels.get(reason, reason)} : {count}" for reason, count in excluded.items()) + ". Un torrent peut avoir plusieurs motifs d’exclusion.")
@@ -371,6 +373,8 @@ class Conversation:
         selected = state["items"][state["index"]]
         title = discord.utils.escape_markdown(selected["title"][:250])
         lines = [f"Je propose d’ajouter **{title}**.", f"Dossier cible : **{discord.utils.escape_markdown(state['prefs']['target_name'])}**."]
+        if state["intent"].get("catalog_warning"):
+            lines.append("⚠️ " + state["intent"]["catalog_warning"])
         media = state["intent"].get("media")
         if media:
             lines.append(f"Œuvre identifiée : {discord.utils.escape_markdown(media['title'])} ({media.get('year') or '?'}) · {media['tmdb_url']}")
