@@ -147,6 +147,41 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chosen), 1)
         self.assertIn('codec_warning', chosen[0])
 
+    async def test_dual_title_searches_goksung_separately_and_keeps_the_logged_58_seed_release(self):
+        calls = []
+        release = {'title': 'The Strangers (2016) MULTi VFF [1080p] BluRay x264-PopHD (Goksung)',
+                   'seeders': '58', 'link': 'goksung'}
+        body = Search(query='Goksung (The Wailing)', query_aliases=['The Stranger'], year=2016,
+                      quality='1080p', selection_policy=True, media_kind='movies')
+        rows = await search_indexer(self.staged_engine(lambda q: [release] if q == 'Goksung 2016' else [], calls), self.store, body, '1')
+        self.assertIn('Goksung 2016', calls)
+        self.assertNotIn('The Stranger 2016', calls)
+        chosen, _ = select_results(rows, body.query, query_aliases=body.query_aliases, year=2016, quality='1080p')
+        self.assertEqual([row['link'] for row in chosen], ['goksung'])
+        wrong_quality, _ = select_results(rows, body.query, year=2016, quality='2160p')
+        self.assertEqual(wrong_quality, [])
+
+    async def test_dual_title_can_reach_the_wailing_independently_within_the_query_budget(self):
+        calls = []
+        release = {'title': 'The.Wailing.2016.MULTI.1080p.H265', 'seeders': '6', 'link': 'english'}
+        body = Search(query='Goksung (The Wailing)', query_aliases=['The Stranger'], year=2016,
+                      quality='1080p', selection_policy=True)
+        rows = await search_indexer(self.staged_engine(lambda q: [release] if q == 'The Wailing 2016' else [], calls), self.store, body, '1')
+        self.assertIn('Goksung 2016', calls)
+        self.assertIn('The Wailing 2016', calls)
+        self.assertLessEqual(len(calls), 12)
+        chosen, _ = select_results(rows, body.query, year=2016, quality='1080p')
+        self.assertEqual(len(chosen), 1)
+
+    def test_parenthetical_annotations_are_not_mistaken_for_alternate_titles(self):
+        from chamoxis_common.titles import title_variants
+        self.assertEqual(title_variants('Goksung (The Wailing)'), ['Goksung (The Wailing)', 'Goksung', 'The Wailing'])
+        for title in ('Dune (2021)', 'Alien (Director’s Cut)', 'Show (Saison 2)', 'Film (1080p)', 'Film (Version longue)'):
+            self.assertEqual(title_variants(title), [title])
+        from modules.plex.core.search import rejection_reasons
+        self.assertIn('year', rejection_reasons({'title': 'The.Wailing.2024.1080p'}, 'Goksung (The Wailing)', year=2016))
+        self.assertIn('title', rejection_reasons({'title': 'Other.2016.1080p'}, 'Goksung (The Wailing)', year=2016))
+
     async def test_fallback_seed_and_quality_results_do_not_stop_search_and_requests_are_bounded(self):
         calls = []
         engine = self.staged_engine(lambda q: [{'title': 'Show.2026.S01.1080p.H265', 'seeders': '0', 'link': 'zero'},

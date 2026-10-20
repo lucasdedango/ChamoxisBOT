@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from xml.etree import ElementTree as ET
 from modules.plex.core.search import seed_count, rejection_reasons, normalize_search_text
+from chamoxis_common.titles import title_variants
 
 
 def satisfactory_results(items, body):
@@ -54,10 +55,11 @@ async def search_indexer(engine, store, body, indexer):
                 params['ep'] = body.episode
             urls.append(parameters(base, **params))
     normalized = {}
-    for title in [body.query, *body.query_aliases]:
-        title = normalize_search_text(title)
-        if title:
-            normalized.setdefault(title.casefold(), title)
+    for value in [body.query, *body.query_aliases]:
+        for title in title_variants(value):
+            title = normalize_search_text(title)
+            if title:
+                normalized.setdefault(title.casefold(), title)
     titles = list(normalized.values())[:4]
     targeted = []
     for title in titles:

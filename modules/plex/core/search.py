@@ -1,6 +1,7 @@
 """Historical search operations extracted without changing their behavior."""
 from modules.plex.config import *
 import unicodedata
+from chamoxis_common.titles import title_variants
 
 
 def language_matches(title, language):
@@ -35,7 +36,7 @@ def rejection_reasons(item, query, *, year=None, quality=None, language=None, se
     reasons = []
     if is_av1_title(title) and not allow_av1:
         reasons.append("av1")
-    wanted = [title_tokens(q) for q in [query, *query_aliases] if q.strip()]
+    wanted = [title_tokens(variant) for q in [query, *query_aliases] for variant in title_variants(q)]
     if check_title and not any(w <= title_tokens(title) for w in wanted):
         reasons.append("title")
     years = {int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", title)}

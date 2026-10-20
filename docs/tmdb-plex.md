@@ -65,6 +65,8 @@ La recherche procède désormais par étapes : identifiants annoncés comme pris
 
 Avant de passer au titre d’une autre langue, le bot essaie aussi une variante avec points, comme `Tad.l.explorateur.et.la.Lampe.magique`, car certains trackers ne renvoient pas les mêmes releases avec des espaces. Trouver uniquement de l’AV1 ne déclenche pas l’arrêt anticipé : les variantes restantes sont essayées dans la limite totale de douze requêtes par tracker. Si une variante avec points renvoie des torrents non AV1 compatibles et suffisamment de seeds, les autres langues ne sont pas interrogées inutilement.
 
+Un titre double comme `Goksung (The Wailing)` fournit aussi les variantes indépendantes `Goksung` et `The Wailing`, pour les requêtes et le filtre de titre. Le nom complet reste affiché et recherché. Les dates et mentions de saison, qualité ou édition entre parenthèses ne sont pas utilisées comme titres alternatifs. L’année et les autres critères continuent de s’appliquer ; cette expansion reste soumise à la limite de douze requêtes par tracker et à l’arrêt anticipé.
+
 Après la pagination d’une requête, si un résultat respecte l’identité, le titre, l’année, la saison/épisode, la langue, la qualité souhaitée, les seeds demandés et n’est pas AV1, les requêtes suivantes de ce tracker sont évitées. Des résultats hors sujet ou seulement de repli ne provoquent pas cet arrêt. Les autres trackers configurés restent interrogés. Les recherches sans résultat satisfaisant sont limitées à douze variantes/identifiants par tracker, avec au plus trois pages par requête (250 entrées). Les traductions anglaises sont récupérées dans la même requête de détails TMDb, sans appel séparé.
 
 ## Ambiguïtés TMDb

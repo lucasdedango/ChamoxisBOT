@@ -11,6 +11,7 @@
     "chamoxis_common/logging.py",
     "chamoxis_common/security.py",
     "chamoxis_common/store.py",
+    "chamoxis_common/titles.py",
     "config/services.example.json",
     "constraints.txt",
     "dashboard-update-manifest.json",
