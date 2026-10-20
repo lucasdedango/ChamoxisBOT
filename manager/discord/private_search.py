@@ -26,6 +26,8 @@ class PrivateSearch:
         self.id, self.generation, self.revision = uuid4().hex, 0, 0
         self.stage, self.page, self.selected = 'new', 0, 0
         self.intent, self.choices, self.items, self.qualities = {}, [], [], []
+        self.seasons = []
+        self.episode_count = 0
         self.task_id = None
         self.notice, self.warning = '', ''
         self.view, self.message = None, None
@@ -74,6 +76,15 @@ class PrivateSearch:
         await self.lookup(interaction)
 
     async def lookup(self, interaction):
+        if self.intent['kind'] == 'series' and not self.intent.get('season'):
+            self.seasons = [row for row in self.intent.get('media', {}).get('seasons', [])
+                            if isinstance(row.get('season'), int) and 1 <= row['season'] <= 100]
+            self.seasons = sorted({row['season']: row for row in self.seasons}.values(), key=lambda row: row['season'])
+            self.page = 0
+            self.stage = 'season' if self.seasons else 'clarify'
+            self.notice = 'Quelle saison veux-tu ? TMDb ne fournit pas de liste utilisable pour cette œuvre. Utilise « Préciser la demande » et indique par exemple S02 ou S02E03.'
+            await self.show(interaction)
+            return
         await self.busy(interaction, 'Recherche complète sur les trackers…')
         intent = self.intent
         prefer = intent.get('prefer_quality', not bool(intent.get('quality')))
@@ -116,6 +127,21 @@ class PrivateSearch:
                 media = self.choices[index]
                 rows.append(f"**{index+1}.** {escaped(media['title'], 110)} ({media.get('year') or 'date inconnue'}) · {'Série' if media['kind']=='series' else 'Film'}")
             embed.description = '\n'.join(rows)
+        elif self.stage == 'season':
+            embed.title = 'Quelle saison veux-tu ?'
+            rows = []
+            for index in self.visible_indices():
+                season = self.seasons[index]
+                count = season.get('episodes')
+                rows.append(f"**S{season['season']:02d}** — {escaped(season.get('name') or 'Saison '+str(season['season']), 100)} · {str(count)+' épisodes annoncés' if isinstance(count, int) else 'nombre d’épisodes inconnu'}")
+            embed.description = '\n'.join(rows) + '\nChoisis la saison avant la recherche de torrents.'
+        elif self.stage == 'scope':
+            embed.title = f"Saison {self.intent['season']} : entière ou un épisode ?"
+            embed.description = 'Choisis **Saison entière** pour un pack de cette saison, ou **Un épisode** pour préciser le numéro. Aucun téléchargement n’est lancé à cette étape.'
+        elif self.stage == 'episode':
+            embed.title = f"Quel épisode de la saison {self.intent['season']} ?"
+            embed.description = '\n'.join(f"**S{self.intent['season']:02d}E{index+1:02d}**" for index in self.visible_indices())
+            embed.description += '\nLes numéros proviennent du nombre d’épisodes annoncé par TMDb.'
         elif self.stage in {'torrent', 'uncertain'}:
             item = self.items[self.selected]
             embed.title = 'Torrent sélectionné — confirmation nécessaire'
@@ -137,15 +163,31 @@ class PrivateSearch:
                 embed.description += '\nChoisis une autre qualité dans le menu ; cela ne confirme aucun téléchargement.'
         if self.warning and self.stage not in {'done', 'cancelled'}:
             embed.add_field(name='Information', value=escaped(self.warning, 650), inline=False)
-        size = len(self.choices if self.stage == 'media' else self.items)
-        if self.stage in {'media', 'torrent'}:
+        size = self.page_count_items()
+        if self.stage in {'media', 'torrent', 'season', 'episode'}:
             embed.set_footer(text=f'Page {self.page+1}/{max(1, (size+PAGE_SIZE-1)//PAGE_SIZE)} · {PAGE_SIZE} entrées par page · visible uniquement par toi')
         else:
             embed.set_footer(text='Visible uniquement par toi · session valable 5 minutes')
         return embed
 
+    def page_count_items(self):
+        if self.stage == 'media':
+            return len(self.choices)
+        if self.stage == 'season':
+            return len(self.seasons)
+        if self.stage == 'episode':
+            return self.episode_count
+        return len(self.items)
+
+    async def choose_episode(self, interaction):
+        if self.episode_count <= 0:
+            self.stage, self.notice = 'clarify', 'TMDb ne fournit pas les numéros d’épisodes de cette saison. Précise par exemple S02E03 avec le formulaire.'
+        else:
+            self.stage, self.page = 'episode', 0
+        await self.show(interaction)
+
     def visible_indices(self):
-        size = len(self.choices if self.stage == 'media' else self.items)
+        size = self.page_count_items()
         return range(self.page*PAGE_SIZE, min(size, (self.page+1)*PAGE_SIZE))
 
     async def show(self, interaction):
@@ -189,10 +231,39 @@ class PrivateSearch:
                     await self.begin(interaction)
                 elif action == 'retry' and self.stage == 'error':
                     await self.begin(interaction)
-                elif action in {'previous', 'next'} and self.stage in {'media', 'torrent'}:
-                    size = len(self.choices if self.stage == 'media' else self.items)
+                elif action in {'previous', 'next'} and self.stage in {'media', 'torrent', 'season', 'episode'}:
+                    size = self.page_count_items()
                     self.page = max(0, min(self.page + (1 if action == 'next' else -1), (size-1)//PAGE_SIZE))
                     await self.show(interaction)
+                elif action == 'season' and self.stage == 'season':
+                    number = int(value)
+                    season = next((self.seasons[i] for i in self.visible_indices() if self.seasons[i]['season'] == number), None)
+                    if season is None:
+                        await interaction.followup.send('Choisis une saison de la page affichée.', ephemeral=True)
+                        return
+                    self.intent['season'] = number
+                    count = season.get('episodes')
+                    self.episode_count = min(count, 1000) if isinstance(count, int) and count > 0 else 0
+                    if self.intent.get('episode'):
+                        if self.episode_count and self.intent['episode'] > self.episode_count:
+                            await self.choose_episode(interaction)
+                        else:
+                            await self.lookup(interaction)
+                    else:
+                        self.stage = 'scope'
+                        await self.show(interaction)
+                elif action == 'whole_season' and self.stage == 'scope':
+                    self.intent['episode'] = 0
+                    await self.lookup(interaction)
+                elif action == 'single_episode' and self.stage == 'scope':
+                    await self.choose_episode(interaction)
+                elif action == 'episode' and self.stage == 'episode':
+                    episode = int(value)
+                    if episode-1 not in self.visible_indices():
+                        await interaction.followup.send('Choisis un épisode de la page affichée.', ephemeral=True)
+                        return
+                    self.intent['episode'] = episode
+                    await self.lookup(interaction)
                 elif action in {'media', 'torrent'} and self.stage == action:
                     index = int(value)
                     if index not in self.visible_indices():
@@ -223,6 +294,9 @@ class PrivateSearch:
 
     async def confirm(self, interaction):
         item, intent = self.items[self.selected], self.intent
+        if intent['kind'] == 'series' and not intent.get('season'):
+            await self.lookup(interaction)
+            return
         prefs = Preferences(kind=intent['kind'], target_name=intent['title'].replace('/', ' - ').replace('\\', ' - ')[:140] + (f" ({intent['year']})" if intent.get('year') else ''),
             season=intent.get('season', 0), episode=intent.get('episode', 0), series_mode='single' if intent.get('episode') else 'complete')
         body = AddTorrent(request_id=f'private:{self.id}:{self.generation}:{self.selected}',
@@ -260,6 +334,27 @@ class SearchView(discord.ui.View):
             size = len(rows)
             self.button('Précédent', 'previous', disabled=session.page==0)
             self.button('Suivant', 'next', disabled=(session.page+1)*PAGE_SIZE>=size)
+        elif stage in {'season', 'episode'}:
+            options = []
+            for index in session.visible_indices():
+                if stage == 'season':
+                    season = session.seasons[index]
+                    label = f"S{season['season']:02d} — {season.get('name') or 'Saison '+str(season['season'])}"
+                    description = str(season.get('episodes')) + ' épisodes annoncés' if isinstance(season.get('episodes'), int) else 'Nombre d’épisodes inconnu'
+                    value = str(season['season'])
+                else:
+                    label, description, value = f"S{session.intent['season']:02d}E{index+1:02d}", 'Épisode '+str(index+1), str(index+1)
+                options.append(discord.SelectOption(label=label[:100], description=description[:100], value=value))
+            self.select = discord.ui.Select(placeholder='Choisir une saison' if stage=='season' else 'Choisir un épisode', options=options, row=0)
+            async def choose(interaction):
+                await session.handle(interaction, self.revision, stage, self.select.values[0])
+            self.select.callback = choose
+            self.add_item(self.select)
+            self.button('Précédent', 'previous', disabled=session.page==0)
+            self.button('Suivant', 'next', disabled=(session.page+1)*PAGE_SIZE>=session.page_count_items())
+        elif stage == 'scope':
+            self.button('Saison entière', 'whole_season', style=discord.ButtonStyle.primary)
+            self.button('Un épisode', 'single_episode')
         elif stage == 'quality':
             select = discord.ui.Select(placeholder='Choisir une qualité', options=[discord.SelectOption(label=q, value=q) for q in session.qualities], row=0)
             async def quality(interaction):

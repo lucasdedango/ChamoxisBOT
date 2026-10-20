@@ -225,3 +225,81 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.session.message.edit.assert_awaited_once()
         await confirm.callback(interaction())
         self.assertEqual(self.adds(), [])
+
+    def series_without_season(self):
+        self.session.request = 'Show'
+        self.catalog = {'selected': {'title': 'Show', 'kind': 'series', 'year': 2010, 'tmdb_id': 1,
+            'aliases': ['Show'], 'seasons': [{'season': 1, 'name': 'Saison 1', 'episodes': 10}, {'season': 2, 'name': 'Saison 2', 'episodes': 42}]}}
+
+    async def test_unspecified_series_requires_season_and_whole_or_episode_before_search(self):
+        self.series_without_season()
+        await self.session.start(interaction())
+        self.assertEqual(self.session.stage, 'season')
+        self.plex.request.assert_not_awaited()
+        self.assertEqual([o.value for o in self.session.view.select.options], ['1', '2'])
+        self.session.view.select._values = ['2']
+        await self.session.view.select.callback(interaction())
+        self.assertEqual(self.session.stage, 'scope')
+        self.plex.request.assert_not_awaited()
+        await self.button('Saison entière').callback(interaction())
+        body = self.plex.request.await_args.kwargs['json']
+        self.assertEqual((body['season'], body['episode']), (2, 0))
+        self.assertEqual(self.adds(), [])
+        await self.button('Confirmer l’ajout').callback(interaction())
+        self.assertEqual(self.adds()[0].kwargs['json']['prefs']['series_mode'], 'complete')
+
+    async def test_episode_menu_uses_tmdb_count_and_twenty_per_page(self):
+        self.series_without_season()
+        await self.session.start(interaction())
+        self.session.view.select._values = ['2']
+        await self.session.view.select.callback(interaction())
+        await self.button('Un épisode').callback(interaction())
+        self.plex.request.assert_not_awaited()
+        self.assertEqual(self.session.stage, 'episode')
+        self.assertEqual(len(self.session.view.select.options), 20)
+        self.assertEqual(self.session.view.select.options[0].label, 'S02E01')
+        await self.button('Suivant').callback(interaction())
+        self.assertEqual(self.session.view.select.options[0].label, 'S02E21')
+        self.session.view.select._values = ['21']
+        await self.session.view.select.callback(interaction())
+        body = self.plex.request.await_args.kwargs['json']
+        self.assertEqual((body['season'], body['episode']), (2, 21))
+        self.assertEqual(self.adds(), [])
+        await self.button('Confirmer l’ajout').callback(interaction())
+        self.assertEqual(self.adds()[0].kwargs['json']['prefs']['series_mode'], 'single')
+
+    async def test_explicit_season_remains_a_whole_season_without_extra_question(self):
+        self.series_without_season()
+        self.session.request = 'Show saison 2'
+        await self.session.start(interaction())
+        self.assertEqual(self.session.stage, 'torrent')
+        self.assertEqual(self.plex.request.await_args.kwargs['json']['season'], 2)
+        self.assertEqual(self.plex.request.await_args.kwargs['json']['episode'], 0)
+        self.assertEqual(self.adds(), [])
+
+    async def test_unavailable_tmdb_seasons_asks_for_manual_precision_without_search(self):
+        self.session.request = 'Show'
+        await self.session.start(interaction())
+        self.assertEqual(self.session.stage, 'clarify')
+        self.assertIn('Quelle saison', self.session.notice)
+        self.plex.request.assert_not_awaited()
+        fake = interaction()
+        await self.button('Préciser la demande').callback(fake)
+        modal = fake.response.send_modal.await_args.args[0]
+        modal.request._value = 'Show S02E03'
+        await modal.on_submit(interaction())
+        self.assertEqual(self.session.stage, 'torrent')
+        body = self.plex.request.await_args.kwargs['json']
+        self.assertEqual((body['season'], body['episode']), (2, 3))
+
+    async def test_season_choices_reject_other_users_and_out_of_page_values(self):
+        self.series_without_season()
+        await self.session.start(interaction())
+        self.session.view.select._values = ['2']
+        await self.session.view.select.callback(interaction(99))
+        self.plex.request.assert_not_awaited()
+        self.assertEqual(self.session.stage, 'season')
+        self.session.view.select._values = ['99']
+        await self.session.view.select.callback(interaction())
+        self.plex.request.assert_not_awaited()
+        self.assertEqual(self.session.stage, 'season')
