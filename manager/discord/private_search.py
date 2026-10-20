@@ -30,6 +30,7 @@ class PrivateSearch:
         self.episode_count = 0
         self.task_id = None
         self.notice, self.warning = '', ''
+        self.operation, self.diagnostics = 'analyse de la demande', {}
         self.view, self.message = None, None
         self.lock = asyncio.Lock()
         self.expires = self.clock() + 300
@@ -49,6 +50,9 @@ class PrivateSearch:
     async def begin(self, interaction):
         self.generation += 1
         self.warning, self.page, self.selected = '', 0, 0
+        self.stage = 'new'
+        self.intent, self.diagnostics, self.items, self.choices, self.qualities = {}, {}, [], [], []
+        self.operation = 'analyse de la demande par l’IA'
         if not self.request.strip():
             self.stage, self.notice = 'clarify', 'Précise le film ou la série avec le bouton ci-dessous.'
             await self.show(interaction)
@@ -57,6 +61,8 @@ class PrivateSearch:
         analysis = await self.manager_factory().request('POST', '/ai/analyze', json={'text': 'Ajoute ' + self.request})
         self.intent = ground_intent(analysis['intent'], self.request)
         if self.intent['title'] != 'À préciser':
+            self.operation = 'identification de l’œuvre dans TMDb'
+            await self.busy(interaction, 'Vérification de l’œuvre dans TMDb…')
             catalog = await self.manager_factory().request('POST', '/catalog/resolve', json={
                 'query': self.intent['title'], 'kind': self.intent['kind'], 'year': self.intent.get('year')})
             self.warning = catalog.get('warning') or ''
@@ -76,20 +82,22 @@ class PrivateSearch:
         await self.lookup(interaction)
 
     async def lookup(self, interaction):
+        self.items, self.diagnostics, self.qualities = [], {}, []
         if self.intent['kind'] == 'series' and not self.intent.get('season'):
             self.seasons = [row for row in self.intent.get('media', {}).get('seasons', [])
                             if isinstance(row.get('season'), int) and 1 <= row['season'] <= 100]
             self.seasons = sorted({row['season']: row for row in self.seasons}.values(), key=lambda row: row['season'])
             self.page = 0
             self.stage = 'season' if self.seasons else 'clarify'
-            self.notice = 'Quelle saison veux-tu ? TMDb ne fournit pas de liste utilisable pour cette œuvre. Utilise « Préciser la demande » et indique par exemple S02 ou S02E03.'
+            self.notice = 'Quelle saison veux-tu ? TMDb ne fournit pas de liste utilisable pour cette œuvre. Utilise « Corriger la recherche » et indique par exemple S02 ou S02E03.'
             await self.show(interaction)
             return
-        await self.busy(interaction, 'Recherche complète sur les trackers…')
         intent = self.intent
         prefer = intent.get('prefer_quality', not bool(intent.get('quality')))
         intent['prefer_quality'] = prefer
         intent['quality'] = intent.get('quality') or default_quality()
+        self.operation = 'recherche sur les trackers via le module Plex'
+        await self.busy(interaction, 'Recherche complète sur les trackers…')
         result = await self.plex_factory().request('POST', '/search', json={
             'query': intent['title'], 'query_aliases': intent.get('query_aliases', []),
             'imdb_id': intent.get('imdb_id'), 'tmdb_id': intent.get('tmdb_id'), 'media_kind': intent['kind'],
@@ -98,25 +106,72 @@ class PrivateSearch:
             'min_seeders': intent.get('min_seeders'), 'selection_policy': True, 'strict_series': True,
             'rank_preferences': True, 'refined': True, 'limit': 250})
         self.items, self.page, self.selected = result['items'], 0, 0
+        self.diagnostics = {key: result.get(key) for key in ('received_count', 'retained_count', 'returned_count', 'indexer_count')}
+        self.diagnostics['errors'] = len(result.get('errors') or [])
         if self.items:
             self.stage = 'torrent'
         else:
             self.qualities = result.get('quality_options', [])
             self.stage = 'quality' if self.qualities else 'empty'
             self.notice = 'Aucun torrent compatible avec ces critères.'
+            if result.get('received_count') == 0:
+                self.notice = 'Les indexers n’ont transmis aucun résultat pour cette recherche.'
             if result.get('errors'):
-                self.notice += ' Certains indexers n’ont pas répondu correctement.'
-            labels = {'av1': 'AV1', 'title': 'titre', 'year': 'année', 'quality': 'qualité', 'language': 'langue', 'season': 'saison', 'episode': 'épisode', 'season_pack': 'saison complète', 'media_kind': 'type film/série'}
+                self.notice = 'Recherche incomplète : des indexers sont en erreur et aucun torrent compatible n’a été obtenu. Cela ne prouve pas l’absence du contenu.'
+            elif result.get('received_count', 0):
+                self.notice = 'Des résultats ont été reçus, mais aucun ne correspond aux critères ci-dessous.'
+            labels = {'av1': 'codec AV1 exclu', 'title': 'titre différent', 'year': 'année', 'quality': 'qualité', 'language': 'langue', 'season': 'saison', 'episode': 'épisode', 'season_pack': 'saison complète', 'media_kind': 'type film/série', 'seed_preference': 'préférence de seeds', 'seeders': 'minimum de seeds'}
             reasons = result.get('excluded_counts', {})
             if reasons:
                 self.notice += '\nExclusions : ' + ', '.join(f'{labels.get(k, k)} : {v}' for k, v in reasons.items())
+                self.notice += '\nUn torrent peut cumuler plusieurs motifs d’exclusion.'
         await self.show(interaction)
 
     async def busy(self, interaction, text):
         self.revision += 1
         if self.view:
             self.view.stop()
-        await interaction.edit_original_response(content=text, embed=None, view=None, allowed_mentions=discord.AllowedMentions.none())
+        summary = self.understood()
+        await interaction.edit_original_response(content=(summary + '\n' if summary else '') + text, embed=None, view=None, allowed_mentions=discord.AllowedMentions.none())
+
+    def understood(self):
+        title = self.intent.get('title')
+        return f'J’ai compris : rechercher **{escaped(title, 180)}**.' if title and title != 'À préciser' else ''
+
+    def criteria(self):
+        intent = self.intent
+        parts = ['Type compris : série' if intent.get('kind') == 'series' else 'Type compris : film']
+        if intent.get('year'):
+            parts.append(str(intent['year']))
+        if intent.get('season'):
+            scope = f"S{intent['season']:02d}"
+            scope += f"E{intent['episode']:02d}" if intent.get('episode') else ' entière'
+            parts.append(scope)
+        quality = intent.get('quality') or default_quality()
+        default = intent.get('prefer_quality', not bool(intent.get('quality')))
+        parts.append(quality + (' par défaut ; autres qualités si indisponible' if default else ' demandée'))
+        parts.append(intent.get('language') or 'MULTI privilégié')
+        parts.append('AV1 exclu')
+        if intent.get('min_seeders') is not None:
+            parts.append(f"minimum souhaité : {intent['min_seeders']} seeds (repli possible avec avertissement)")
+        return ' · '.join(str(part) for part in parts)
+
+    def examples(self):
+        title = self.intent.get('title')
+        if not title or title == 'À préciser':
+            title = 'Les Anneaux de pouvoir'
+        title = escaped(title, 100)
+        kind = self.intent.get('kind', 'series')
+        scope = f" S{self.intent.get('season') or 1:02d}" if kind == 'series' else ''
+        if kind == 'series' and self.intent.get('episode'):
+            scope += f"E{self.intent['episode']:02d}"
+        year = f" {self.intent['year']}" if self.intent.get('year') else ''
+        quality = self.intent.get('quality') or default_quality()
+        return (f'Formulations conseillées :\n« man cherche {title}{year}{scope} en {quality} »\n'
+                '« man ajoute Charlie et la Chocolaterie 2005 en 1080p » (film)\n'
+                'Indique le titre exact, l’année si ambiguë, puis la saison ou S01E03 pour un épisode. '
+                '« cherche » et « ajoute » ouvrent la même recherche à confirmer. '
+                'Utilise **Corriger la recherche** pour modifier ta demande ; un autre libellé ne garantit pas de nouveaux résultats.')
 
     def embed(self):
         embed = discord.Embed(title='Recherche privée', colour=discord.Colour.blurple())
@@ -163,6 +218,16 @@ class PrivateSearch:
                 embed.description += '\nChoisis une autre qualité dans le menu ; cela ne confirme aucun téléchargement.'
         if self.warning and self.stage not in {'done', 'cancelled'}:
             embed.add_field(name='Information', value=escaped(self.warning, 650), inline=False)
+        if self.stage not in {'done', 'cancelled'}:
+            if self.understood():
+                embed.add_field(name='Demande comprise', value=self.understood(), inline=False)
+                embed.add_field(name='Critères utilisés', value=escaped(self.criteria(), 650), inline=False)
+            if self.diagnostics.get('received_count') is not None:
+                embed.add_field(name='Bilan de la recherche', value=f"{self.diagnostics['received_count']} résultats reçus · {self.diagnostics.get('retained_count', '?')} retenus · {len(self.items)} proposés", inline=False)
+            if self.diagnostics.get('errors'):
+                embed.add_field(name='Recherche incomplète', value=f"{self.diagnostics['errors']} indexer(s) en erreur. D’autres résultats peuvent manquer.", inline=False)
+            if self.stage in {'empty', 'quality', 'clarify'}:
+                embed.add_field(name='Comment préciser la demande', value=self.examples(), inline=False)
         size = self.page_count_items()
         if self.stage in {'media', 'torrent', 'season', 'episode'}:
             embed.set_footer(text=f'Page {self.page+1}/{max(1, (size+PAGE_SIZE-1)//PAGE_SIZE)} · {PAGE_SIZE} entrées par page · visible uniquement par toi')
@@ -199,9 +264,12 @@ class PrivateSearch:
         self.message = await interaction.edit_original_response(content=None, embed=self.embed(), view=self.view, allowed_mentions=discord.AllowedMentions.none())
 
     async def failed(self, interaction, error):
-        logger.warning('Private search failed owner=%s stage=%s error=%s', self.owner_id, self.stage, type(error).__name__)
+        status = getattr(error, 'status', None)
+        status = status if isinstance(status, int) else None
+        logger.warning('Private search failed owner=%s stage=%s operation=%s error=%s status=%s', self.owner_id, self.stage, self.operation, type(error).__name__, status)
         if self.stage not in {'uncertain', 'done'}:
-            self.stage, self.notice = 'error', 'La demande n’a pas pu être terminée. Réessaie ou précise les critères.'
+            reason = 'Le délai de réponse a été dépassé.' if isinstance(error, TimeoutError) else 'Le service n’a pas pu répondre correctement.'
+            self.stage, self.notice = 'error', f'Étape en échec : {self.operation}. {reason} Ce n’est pas une recherche sans résultat. Utilise « Réessayer » ; corriger le titre ne résout pas une panne de service.'
         await self.show(interaction)
 
     async def handle(self, interaction, revision, action, value=None):
@@ -271,6 +339,7 @@ class PrivateSearch:
                         return
                     if action == 'media':
                         media = self.choices[index]
+                        self.operation = 'lecture de la fiche TMDb choisie'
                         details = await self.manager_factory().request('GET', f"/catalog/media/{media['kind']}/{media['tmdb_id']}")
                         self.intent = identified_intent(self.intent, details)
                         await self.lookup(interaction)
@@ -281,6 +350,7 @@ class PrivateSearch:
                     self.intent.update(quality=value, prefer_quality=False)
                     await self.lookup(interaction)
                 elif action == 'status' and self.stage == 'done':
+                    self.operation = 'consultation du suivi du téléchargement'
                     task = await self.plex_factory().request('GET', '/tasks/' + self.task_id)
                     if task.get('payload', {}).get('user_id') != self.owner_id:
                         raise PermissionError('Task ownership mismatch')
@@ -368,7 +438,7 @@ class SearchView(discord.ui.View):
         if stage == 'error':
             self.button('Réessayer', 'retry')
         if stage not in {'uncertain', 'cancelled'}:
-            self.button('Nouvelle recherche' if stage=='done' else 'Préciser la demande', 'refine')
+            self.button('Nouvelle recherche' if stage=='done' else 'Corriger la recherche', 'refine')
         if stage not in {'uncertain', 'done', 'cancelled'}:
             self.button('Annuler', 'cancel', style=discord.ButtonStyle.danger)
 

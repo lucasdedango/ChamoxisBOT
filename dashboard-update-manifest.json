@@ -59,6 +59,7 @@
     "manager/discord/commands/server.py",
     "manager/discord/conversation.py",
     "manager/discord/private_search.py",
+    "manager/discord/search_requests.py",
     "manager/main.py",
     "manager/requirements.txt",
     "modules/__init__.py",
@@ -103,6 +104,7 @@
     "tests/test_resilience.py",
     "tests/test_runtime_robustness.py",
     "tests/test_search_preferences.py",
+    "tests/test_search_requests.py",
     "tests/test_selection_policy.py"
   ]
 }

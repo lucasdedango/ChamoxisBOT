@@ -134,6 +134,8 @@ def create_app(engine=None, store=None, background=True):
         logger.info("Search results received=%s compatible=%s retained=%s ranking=%s indexer_errors=%s",
                     received, compatible, len(items), body.rank_preferences, len(errors))
         return {"items": public_results(items[:body.limit]), "errors": errors,
+                "received_count": received, "retained_count": len(items), "returned_count": len(items[:body.limit]),
+                "indexer_count": len(indexers),
                 "excluded_counts": dict(excluded), "seeders_required": body.min_seeders, "quality_options": quality_options}
 
     @app.get("/rss")

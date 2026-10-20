@@ -8,6 +8,7 @@ import time
 import discord
 from manager.core.permissions import allowed_user, administrator, ids
 from manager.discord.bridge import manager_client, plex_client
+from manager.discord.search_requests import search_request
 from shared.schemas import AddTorrent, Preferences, ConversationRoute
 from manager.ai.preferences import ground_intent
 from manager.ai.selection import default_quality
@@ -144,7 +145,8 @@ class Conversation:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.warning("Conversation failed user=%s channel=%s error=%s", message.author.id, message.channel.id, type(error).__name__)
+            status = getattr(error, 'status', None)
+            logger.warning("Conversation failed user=%s channel=%s error=%s status=%s", message.author.id, message.channel.id, type(error).__name__, status if isinstance(status, int) else None)
             await self.say(message, "Je n’ai pas pu terminer la demande. Réessaie avec « bot cherche … » ou `/recherchetorrent`.")
         finally:
             self.lock_users[key] -= 1
@@ -156,7 +158,7 @@ class Conversation:
         text = message.content.strip()
         prefix = re.match(r"^(?:bot|man)\b\s*[,!:]?\s*(.*)$", text, re.I | re.S)
         addressed = prefix[1].strip() if prefix else text
-        trigger = re.match(r"^cherche\b\s*[:,]?\s*(.*)$", addressed, re.I | re.S) if prefix else None
+        trigger = search_request(addressed) if prefix else None
         state = self.store.get(key)
         if state and state.get("expires", 0) < self.clock():
             self.store.set(key, None)
@@ -178,8 +180,8 @@ class Conversation:
             self.save(key, {"phase": "clarify", "request": state["user_request"], "user_request": state["user_request"]})
             await self.say(message, "La recherche complète a déjà été effectuée. Précise le titre ou l’année de l’œuvre, la saison, la qualité ou la langue souhaitée, puis recommence avec « bot cherche … ». Rien de nouveau n’a été ajouté.")
             return
-        if trigger:
-            request = trigger[1].strip(' "«»')
+        if trigger is not None:
+            request = trigger
             if not request and self.private_mode:
                 await self.search(message, key, "")
                 return

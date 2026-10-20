@@ -55,6 +55,89 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
     def button(self, name):
         return next(c for c in self.session.view.children if getattr(c, 'label', None) == name)
 
+    async def test_add_request_opens_private_search_without_ai_routing_or_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(Path(folder) / 'db')
+            try:
+                conversation = Conversation(store, lambda: self.manager, lambda: self.plex)
+                channel = SimpleNamespace(id=123, send=AsyncMock())
+                for verb in ('ajoute', 'cherche', 'tu peux me trouver'):
+                    message = SimpleNamespace(id=123, guild=SimpleNamespace(id=1), channel=channel, author=SimpleNamespace(id=42, bot=False), content=f'Man {verb} Les Anneaux de pouvoir S01')
+                    await conversation.handle(message)
+                    invitation = channel.send.await_args.kwargs['view']
+                    self.assertEqual(invitation.request, 'Les Anneaux de pouvoir S01')
+                self.manager.request.assert_not_awaited()
+                self.plex.request.assert_not_awaited()
+            finally:
+                store.close()
+
+    async def test_empty_search_explains_understanding_exclusions_and_examples(self):
+        self.result = {'items': [], 'errors': [], 'received_count': 7, 'retained_count': 0,
+                       'returned_count': 0, 'excluded_counts': {'quality': 5, 'av1': 2}}
+        fake = interaction()
+        await self.session.start(fake)
+        embed = self.session.embed()
+        text = str(embed.to_dict())
+        self.assertIn('J’ai compris : rechercher **Show**', text)
+        self.assertIn('S01 entière', text)
+        self.assertIn('1080p demandée', text)
+        self.assertIn('7 résultats reçus', text)
+        self.assertIn('qualité : 5', text)
+        self.assertIn('codec AV1 exclu : 2', text)
+        self.assertIn('man cherche Show S01 en 1080p', text)
+        self.assertIn('man ajoute Charlie', text)
+        self.assertIn('Des résultats ont été reçus', embed.description)
+        await self.button('Corriger la recherche').callback(fake)
+        modal = fake.response.send_modal.await_args.args[0]
+        self.assertEqual(modal.request.default, self.session.request)
+        progress = [call.kwargs.get('content') or '' for call in fake.edit_original_response.await_args_list]
+        self.assertTrue(any('J’ai compris' in value and 'Recherche complète' in value for value in progress))
+        self.assertEqual(self.adds(), [])
+
+    async def test_no_raw_results_differs_from_indexer_errors(self):
+        self.result = {'items': [], 'errors': [], 'received_count': 0, 'retained_count': 0}
+        await self.session.start(interaction())
+        self.assertIn('aucun résultat', self.session.notice)
+        self.assertNotIn('incomplète', self.session.notice)
+        self.result['errors'] = [{'indexer': '1'}]
+        await self.session.begin(interaction())
+        self.assertIn('Recherche incomplète', self.session.notice)
+        self.assertIn('ne prouve pas', self.session.notice)
+
+    async def test_partial_results_warn_about_failed_indexers(self):
+        self.result['errors'] = [{'indexer': '1'}]
+        await self.session.start(interaction())
+        self.assertEqual(self.session.stage, 'torrent')
+        self.assertIn('Recherche incomplète', str(self.session.embed().to_dict()))
+
+    async def test_tracker_timeout_does_not_show_previous_result_counts_or_error_secrets(self):
+        self.result.update(received_count=24, retained_count=24)
+        await self.session.start(interaction())
+        self.plex.request.side_effect = TimeoutError('secret-tracker-url')
+        with self.assertLogs('manager.discord.private_search', level='WARNING') as logs:
+            try:
+                await self.session.lookup(interaction())
+            except TimeoutError as error:
+                await self.session.failed(interaction(), error)
+        self.assertIn('TimeoutError', str(logs.output))
+        self.assertNotIn('secret-tracker-url', str(logs.output))
+        self.assertEqual(self.session.stage, 'error')
+        self.assertIn('trackers', self.session.notice)
+        self.assertIn('délai', self.session.notice)
+        self.assertNotIn('résultats reçus', str(self.session.embed().to_dict()))
+        self.assertEqual(self.adds(), [])
+
+    async def test_backend_failure_is_not_a_missing_result_or_stale_interpretation(self):
+        from chamoxis_common.http import APIError
+        await self.session.start(interaction())
+        self.manager.request.side_effect = APIError(503)
+        await self.session.start(interaction())
+        self.assertEqual(self.session.stage, 'error')
+        self.assertIn('analyse de la demande par l’IA', self.session.notice)
+        self.assertIn('Ce n’est pas une recherche sans résultat', self.session.notice)
+        self.assertNotIn('Show', str(self.session.embed().to_dict()))
+        self.assertEqual(self.adds(), [])
+
     async def test_public_message_only_offers_owner_private_handoff(self):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(Path(folder) / 'db')
@@ -181,7 +264,7 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.intent = {**self.intent, 'title': 'À préciser', 'clarification': 'Quel titre ?'}
         await self.session.start(interaction())
         fake = interaction()
-        await self.button('Préciser la demande').callback(fake)
+        await self.button('Corriger la recherche').callback(fake)
         modal = fake.response.send_modal.await_args.args[0]
         self.intent = {**self.intent, 'title': 'Show', 'clarification': None}
         modal.request._value = 'Show saison 1'
@@ -284,7 +367,7 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Quelle saison', self.session.notice)
         self.plex.request.assert_not_awaited()
         fake = interaction()
-        await self.button('Préciser la demande').callback(fake)
+        await self.button('Corriger la recherche').callback(fake)
         modal = fake.response.send_modal.await_args.args[0]
         modal.request._value = 'Show S02E03'
         await modal.on_submit(interaction())

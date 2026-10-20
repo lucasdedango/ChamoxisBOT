@@ -220,7 +220,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             {"intent": {**self.intent, "title": "Grey’s Anatomy", "year": 2010, "season": 11}}]
         self.items[:] = [{"title": "Grey’s Anatomy S11 Complete", "seeders": "9", "enclosure": "result:first"}]
         with patch.dict(os.environ, {"SEARCH_DEFAULT_QUALITY": "720p"}):
-            await self.worker.handle(self.message("bot tu pourrais me trouver une version de greys anatomy S11 qui a des seed stp", message_id=100))
+            await self.worker.handle(self.message("bot j’aimerais une version de greys anatomy S11 qui a des seed stp", message_id=100))
         body = self.plex.request.await_args.kwargs["json"]
         self.assertIsNone(body["year"])
         self.assertEqual(body["quality"], "720p")

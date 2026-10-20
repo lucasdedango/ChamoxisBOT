@@ -99,10 +99,15 @@ class SelectionPolicyAPITests(unittest.IsolatedAsyncioTestCase):
                     headers = {"X-API-Key": "test-key"}
                     result = (await client.post("/search", json=body, headers=headers)).json()
                     self.assertEqual(result["items"], [])
+                    self.assertEqual(result["received_count"], 4)
+                    self.assertEqual(result["retained_count"], 0)
+                    self.assertEqual(result["indexer_count"], 1)
                     self.assertEqual(result["quality_options"], ["720p"])
                     body["quality"] = "720p"
                     result = (await client.post("/search", json=body, headers=headers)).json()
                     self.assertEqual([r["size"] for r in result["items"]], ["2000", "3000"])
+                    self.assertEqual(result["retained_count"], 2)
+                    self.assertEqual(result["returned_count"], 2)
                     self.assertIn("selection_reason", result["items"][0])
                     self.assertTrue(result["items"][0]["link"].startswith("result:"))
             finally:

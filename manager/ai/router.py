@@ -22,6 +22,10 @@ class Router:
                 return {"backend": backend.url, "model": backend.model, "result": result}
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("Ollama backend failed; trying next configured model")
+            except Exception as error:
+                status = getattr(error, 'status', None)
+                status = status if isinstance(status, int) else None
+                # Exception messages may contain prompts, model output or credentials.
+                logger.warning("Ollama backend failed; trying next configured model error=%s status=%s",
+                               type(error).__name__, status)
         raise AIUnavailable("No configured model is available or returned a valid response")
