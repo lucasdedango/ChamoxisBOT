@@ -49,20 +49,38 @@ class Updater:
     @staticmethod
     def git_env():
         import os
-        return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
+        inherited = {k: v for k, v in os.environ.items() if k not in {
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX"}}
+        return {**inherited, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
                 "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": str(Path(__file__).resolve().parent / "no-hooks")}
 
     def text(self, *args, **kwargs):
         return self.git(*args, **kwargs).stdout.decode("utf-8", "replace").strip()
 
     def status(self):
+        root = str(self.root)
         if not (self.root / ".git").exists():
-            return {"available": False, "reason": "Installer depuis un clone Git pour utiliser les mises à jour"}
+            return {"available": False, "root": root, "reason": "Aucun clone Git dans le dossier utilisé par le dashboard : " + root}
+        actual_root = Path(self.text("rev-parse", "--show-toplevel")).resolve()
+        if actual_root != self.root:
+            return {"available": False, "root": root, "reason": f"Le dashboard utilise {root}, mais Git désigne {actual_root}. Relance le dashboard depuis le clone voulu."}
         branch, commit = self.text("branch", "--show-current"), self.text("rev-parse", "HEAD")
+        raw = self.git("status", "--porcelain=v1", "-z", "--untracked-files=no").stdout.decode("utf-8", "replace").split("\0")
+        dirty_files = []
+        position = 0
+        while position < len(raw):
+            entry = raw[position]
+            position += 1
+            if not entry:
+                continue
+            dirty_files.append({"status": entry[:2].strip(), "path": entry[3:]})
+            if "R" in entry[:2] or "C" in entry[:2]:
+                position += 1  # Rename/copy source follows the destination in -z output.
         remote = self.remote_heads.get(branch)
-        return {"available": True, "branch": branch, "commit": commit,
+        return {"available": True, "root": root, "branch": branch, "commit": commit,
                 "remote_commit": remote, "update_available": remote != commit if remote else None,
-                "dirty": bool(self.text("status", "--porcelain", "--untracked-files=no"))}
+                "dirty": bool(dirty_files), "dirty_files": dirty_files[:50], "dirty_count": len(dirty_files)}
 
     def branches(self):
         output = self.text("ls-remote", "--heads", REPOSITORY)
@@ -88,8 +106,11 @@ class Updater:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", branch) or self.git("check-ref-format", "refs/heads/" + branch, check=False).returncode:
             raise ValueError("Nom de branche invalide")
         state = self.status()
-        if not state["available"] or state["dirty"]:
-            raise ValueError("Le dépôt doit être un clone Git sans modifications locales suivies; sauvegarde/commit tes changements d’abord")
+        if not state["available"]:
+            raise ValueError(state["reason"])
+        if state["dirty"]:
+            paths = ", ".join(item["path"] for item in state["dirty_files"][:12])
+            raise ValueError(f"Mise à jour bloquée dans {state['root']} : {state['dirty_count']} fichier(s) suivi(s) modifié(s) : {paths}. Sauvegarde/commit ces changements d’abord.")
         self.cache.mkdir(parents=True, exist_ok=True)
         if not (self.cache / "HEAD").exists():
             self.git("init", "--bare", cache=True)

@@ -104,3 +104,34 @@ class UpdateTests(unittest.TestCase):
         git(self.remote, 'add', '-f', 'manager/.env')
         git(self.remote, 'commit', '-m', 'unsafe file')
         with self.assertRaisesRegex(ValueError, 'non autorisé'): self.updater.prepare('test/dashboard')
+
+    def test_status_lists_real_changed_paths_without_treating_ignored_settings_as_dirty(self):
+        state = self.updater.status()
+        self.assertFalse(state['dirty'])
+        self.assertEqual(state['root'], str(self.local.resolve()))
+        (self.local / 'manager/.env').write_text('private=do-not-display\n')
+        (self.local / 'dashboard/main.py').write_text('# local edit\n')
+        state = self.updater.status()
+        self.assertEqual(state['dirty_files'], [{'status': 'M', 'path': 'dashboard/main.py'}])
+        self.assertEqual(state['dirty_count'], 1)
+        with self.assertRaisesRegex(ValueError, 'dashboard/main.py') as error:
+            self.updater.prepare('test/dashboard')
+        self.assertIn(str(self.local.resolve()), str(error.exception))
+        self.assertNotIn('do-not-display', str(state))
+
+    def test_status_uses_configured_clone_despite_inherited_git_paths(self):
+        import os
+        (self.remote / 'dashboard/main.py').write_text('# different repository with local edits\n')
+        with patch.dict(os.environ, {'GIT_DIR': str(self.remote / '.git'), 'GIT_WORK_TREE': str(self.remote), 'GIT_INDEX_FILE': str(self.remote / '.git/index')}):
+            state = self.updater.status()
+        self.assertFalse(state['dirty'])
+        self.assertEqual(state['root'], str(self.local.resolve()))
+        self.assertEqual(state['commit'], git(self.local, 'rev-parse', 'HEAD'))
+
+    def test_non_clone_error_names_the_dashboard_folder(self):
+        folder = self.base / 'old-install'
+        folder.mkdir()
+        updater = Updater(folder)
+        with self.assertRaisesRegex(ValueError, 'old-install') as error:
+            updater.prepare('test/dashboard')
+        self.assertIn('Aucun clone Git', str(error.exception))
