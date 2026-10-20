@@ -18,18 +18,14 @@ au fonctionnement précédent. Le nouveau gestionnaire ne charge pas `bot.py`.
 
 ## Changements visibles assumés
 
-Les commandes historiques et leurs équivalents `/plex …` coexistent. Un résultat
-sélectionné demande maintenant une confirmation supplémentaire avant l’ajout.
-`/plex demande` interprète une phrase puis propose une recherche et le même
-parcours de sélection/confirmation. `/plex operations` affiche les demandes
-de l’utilisateur ; les administrateurs peuvent consulter toutes les demandes.
+Le gestionnaire central expose désormais `/aide`, `/recherchetorrent`, `/telechargements`, `/ajoutertorrent`, `/ia` et `/admin`. Les anciens doublons `/plex …`, `/info` et le flux RSS ne sont plus publiés. Le parcours privé demande toujours une confirmation explicite avant l’ajout. `/telechargements` ne montre que les demandes de son auteur, même administrateur. La vue globale se trouve dans `/admin torrents` et le dashboard. Voir le [guide utilisateur](guide-utilisateur.md) pour la correspondance des commandes et les autorisations persistantes.
 
 Les mises à jour se font par événements et message de tâche persistant, avec
 progression par tranches de 10 %, plutôt que par une boucle Discord. Les imports
 continuent lorsque Discord ou le gestionnaire sont indisponibles. Les événements
 terminaux restent consultables même après reconnexion.
 
-`/cleartorrents` est réservé aux administrateurs et annule les suivis persistants
+`/admin annuler_suivis` est réservé aux administrateurs et annule, après confirmation, les suivis persistants
 annulables. Il ne supprime ni torrent ni fichier, et n’interrompt pas un import
 déjà commencé. La résolution ambiguë d’un nouveau torrent ne choisit plus
 automatiquement le dernier torrent de la catégorie : elle demande une vérification.

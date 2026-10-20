@@ -27,7 +27,7 @@ Les tâches déjà en `needs_review` ne sont pas relancées par la mise à jour.
 
 ## Discord
 
-`/recherchetorrent` et `/info` accusent réception immédiatement, puis modifient la réponse différée. `/plex recherchetorrent` utilise le même callback. Une interaction déjà expirée (`10062` ou `10015`) est journalisée une seule fois sans essayer de lui envoyer une seconde réponse. Il faut relancer la commande. Une coupure réseau ou un blocage de la boucle Discord peut toujours empêcher l'accusé de réception d'arriver à temps.
+`/recherchetorrent` accuse réception immédiatement en privé avant l’analyse. `/aide` affiche directement le guide privé. Les anciennes commandes `/info` et `/plex …` sont retirées du gestionnaire central. Une interaction déjà expirée (`10062` ou `10015`) est journalisée une seule fois sans essayer de lui envoyer une seconde réponse. Il faut relancer la commande. Une coupure réseau ou un blocage de la boucle Discord peut toujours empêcher l'accusé de réception d'arriver à temps.
 
 ## Confidentialité des logs
 

@@ -16,13 +16,13 @@ def interaction(user_id=42):
 
 
 class DiscordFlowTests(unittest.IsolatedAsyncioTestCase):
-    def test_historical_commands_and_groups_registered(self):
+    def test_only_reviewed_commands_are_registered_without_alias_duplicates(self):
         names = {command.name for command in ui.bot.tree.get_commands()}
-        self.assertEqual(names, {"status", "rssfeed", "recherchetorrent", "addtorrent", "cleartorrents", "info", "plex", "server", "ai"})
-        group = ui.bot.tree.get_command("plex")
-        for name in {"status", "rssfeed", "recherchetorrent", "addtorrent", "cleartorrents", "info"}:
-            self.assertIs(group.get_command(name).callback, ui.bot.tree.get_command(name).callback)
-        self.assertIs(ui.bot.tree.interaction_check, ui.ensure_user_has_read_info)
+        self.assertEqual(names, {"aide", "recherchetorrent", "telechargements", "ajoutertorrent", "ia", "admin"})
+        group = ui.bot.tree.get_command("admin")
+        self.assertEqual({c.name for c in group.commands}, {'utilisateurs', 'torrents', 'annuler_suivis', 'services', 'relancer'})
+        self.assertEqual({c.name for c in group.get_command('utilisateurs').commands}, {'ajouter', 'retirer', 'liste', 'mode'})
+        self.assertIs(ui.bot.tree.interaction_check, ui.check_command_access)
 
     async def test_search_menu_is_built_from_backend_response(self):
         client = SimpleNamespace(request=AsyncMock(return_value={"items": [{"title": "Dune.2021.1080p", "enclosure": "result:abc", "source": "C411", "size": "12345"}], "errors": []}))

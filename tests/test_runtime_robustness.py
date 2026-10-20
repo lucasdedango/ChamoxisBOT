@@ -146,14 +146,14 @@ class SearchDiagnosticTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DiscordAckTests(unittest.IsolatedAsyncioTestCase):
-    async def test_search_acknowledges_before_building_the_form(self):
+    async def test_modern_search_acknowledges_before_analysis(self):
         events = []
         fake = SimpleNamespace(user=SimpleNamespace(id=42), response=SimpleNamespace(defer=AsyncMock(side_effect=lambda **_: events.append('ack')), send_message=AsyncMock()), edit_original_response=AsyncMock())
-        with patch.object(ui, 'default_mode_from_query', side_effect=lambda _: (events.append('form') or ('series', 1, 0))):
+        with patch.dict(os.environ, {'DISCORD_ALLOWED_USER_IDS': '42'}), patch('manager.discord.private_search.PrivateSearch.begin', AsyncMock(side_effect=lambda _: events.append('analysis'))):
             await ui.recherchetorrent.callback(fake, 'Below S01')
-        self.assertEqual(events, ['ack', 'form'])
+        self.assertEqual(events, ['ack', 'analysis'])
         fake.response.send_message.assert_not_awaited()
-        self.assertIsInstance(fake.edit_original_response.await_args.kwargs['view'], ui.TorrentKindView)
+        fake.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
 
     async def test_expired_interaction_is_not_retried(self):
         fake = SimpleNamespace(id=123, command=SimpleNamespace(qualified_name='recherchetorrent'), response=SimpleNamespace(send_message=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))

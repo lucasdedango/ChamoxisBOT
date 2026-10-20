@@ -25,6 +25,9 @@ class ConfirmDownload(discord.ui.View):
             await interaction.response.send_message("Ajout non autorisé.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
+        if not allowed_user(interaction.user.id):
+            await interaction.followup.send('Ajout non autorisé : ton accès a été retiré.', ephemeral=True)
+            return
         body = AddTorrent(request_id=self.request_id, link=self.link, title=self.title,
                           user_id=interaction.user.id, channel_id=None, private=True,
                           prefs=Preferences.model_validate(self.prefs), confirmed=True)
@@ -117,11 +120,58 @@ async def demande(interaction: discord.Interaction, texte: str):
     await PrivateSearch(interaction.user.id, texte, manager_client, plex_client).start(interaction)
 
 
-async def operations(interaction: discord.Interaction):
-    from manager.core.permissions import administrator
-    await interaction.response.defer(ephemeral=True)
+async def download_summary(user_id):
     tasks = await plex_client().request("GET", "/tasks")
-    tasks = [t for t in tasks if t["payload"]["user_id"] == interaction.user.id or administrator(interaction.user.id)]
-    lines = [f"`{t['id']}` — {t['state']} — {t['payload'].get('title', '')[:80]}" for t in tasks[:12]]
-    await interaction.followup.send("\n".join(lines)[:1800] or "Aucune demande enregistrée.", ephemeral=True,
+    tasks = [t for t in tasks if t["payload"]["user_id"] == user_id]
+    if not tasks:
+        return "Aucune demande enregistrée. Lance /recherchetorrent pour commencer."
+    snapshots, note = {}, ""
+    try:
+        result = await plex_client().request("GET", "/downloads/status", params={"user_id": user_id})
+        owned = {task['id'] for task in tasks}
+        snapshots = {row['id']: row for row in result['downloads'] if row['id'] in owned}
+    except Exception:
+        note = "\nProgression qBittorrent temporairement indisponible ; les états des demandes restent affichés."
+    states = {'queued': 'en attente', 'adding': 'ajout en cours', 'downloading': 'téléchargement', 'importing': 'import en cours', 'completed': 'terminé', 'needs_review': 'à vérifier', 'simulated': 'mode test', 'cancelled': 'annulé', 'failed': 'échec', 'duplicate': 'doublon'}
+    lines = []
+    for task in tasks[:12]:
+        row = snapshots.get(task['id'], {})
+        progress = row.get('progress')
+        suffix = f" · {max(0, min(100, int(progress * 100)))}%" if isinstance(progress, (float, int)) else ''
+        lines.append(f"**{discord.utils.escape_markdown(task['payload'].get('title', '')[:70])}** — {states.get(task['state'], task['state'])}{suffix}\n`{task['id']}`")
+        if row.get('observation'):
+            lines.append(discord.utils.escape_markdown(row['observation'][:160]))
+    return "\n".join(lines)[:1600] + note
+
+
+class DownloadStatusView(discord.ui.View):
+    def __init__(self, owner_id):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    @discord.ui.button(label='Actualiser le suivi', style=discord.ButtonStyle.primary)
+    async def refresh(self, interaction, button):
+        from manager.core.permissions import allowed_user
+        if interaction.user.id != self.owner_id or not allowed_user(self.owner_id):
+            await interaction.response.send_message('Suivi non autorisé.', ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            content = await download_summary(self.owner_id)
+        except Exception:
+            content = 'Impossible de consulter tes demandes actuellement. Réessaie après le redémarrage du module Plex.'
+        await interaction.edit_original_response(content=content, view=self, allowed_mentions=discord.AllowedMentions.none())
+
+
+async def operations(interaction: discord.Interaction):
+    from manager.core.permissions import allowed_user
+    if not allowed_user(interaction.user.id):
+        await interaction.response.send_message('Suivi non autorisé.', ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        content = await download_summary(interaction.user.id)
+    except Exception:
+        content = 'Impossible de consulter tes demandes actuellement. Réessaie après le redémarrage du module Plex.'
+    await interaction.followup.send(content, view=DownloadStatusView(interaction.user.id), ephemeral=True,
                                     allowed_mentions=discord.AllowedMentions.none())

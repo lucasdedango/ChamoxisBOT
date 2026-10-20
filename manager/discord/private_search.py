@@ -64,6 +64,9 @@ class PrivateSearch:
         if not acknowledged:
             await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.lock:
+            if not allowed_user(self.owner_id):
+                await interaction.followup.send('Recherche non autorisée : ton accès a été retiré.', ephemeral=True)
+                return
             try:
                 await self.begin(interaction)
             except Exception as error:
@@ -319,6 +322,9 @@ class PrivateSearch:
             return
         await interaction.response.defer()
         async with self.lock:
+            if not allowed_user(self.owner_id):
+                await interaction.followup.send('Recherche non autorisée : ton accès a été retiré.', ephemeral=True)
+                return
             if revision != self.revision:
                 await interaction.followup.send('Cette proposition a été remplacée. Utilise le dernier menu.', ephemeral=True)
                 return
@@ -387,7 +393,7 @@ class PrivateSearch:
                     if task.get('payload', {}).get('user_id') != self.owner_id:
                         raise PermissionError('Task ownership mismatch')
                     states = {'queued': 'en attente', 'downloading': 'téléchargement', 'importing': 'import en cours', 'completed': 'terminé', 'needs_review': 'à vérifier', 'simulated': 'mode test', 'cancelled': 'annulé', 'failed': 'échec', 'duplicate': 'doublon'}
-                    self.notice = f"Demande {self.task_id} : {states.get(task['state'], task['state'])}. Consulte /plex operations pour les détails après expiration de ce menu."
+                    self.notice = f"Demande {self.task_id} : {states.get(task['state'], task['state'])}. Consulte /telechargements pour les détails après expiration de ce menu."
                     await self.show(interaction)
                 elif action == 'confirm' and self.stage in {'torrent', 'uncertain'}:
                     await self.confirm(interaction)
@@ -412,7 +418,7 @@ class PrivateSearch:
             await self.show(interaction)
             return
         self.task_id = str(task['id'])
-        self.stage, self.notice = 'done', f"Demande enregistrée : {task['id']}. Suivi disponible dans /plex operations. Aucun suivi public n’est envoyé pour cette demande. Le mode test du module est respecté."
+        self.stage, self.notice = 'done', f"Demande enregistrée : {task['id']}. Suivi disponible dans /telechargements. Aucun suivi public n’est envoyé pour cette demande. Le mode test du module est respecté."
         await self.show(interaction)
 
 

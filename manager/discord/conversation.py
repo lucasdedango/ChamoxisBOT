@@ -51,7 +51,7 @@ class Conversation:
         if route.action == "search":
             current = self.store.get(key)
             if current and current.get("uncertain"):
-                await self.say(message, "L’ajout précédent est incertain. Réponds « oui » pour vérifier la même demande, ou consulte `/plex operations` avant une nouvelle recherche.")
+                await self.say(message, "L’ajout précédent est incertain. Réponds « oui » pour vérifier la même demande, ou consulte `/telechargements` avant une nouvelle recherche.")
                 return
             source = request
             if current and re.match(r"^(?:plutôt|plutot|en\b|la même|la meme|une autre|avec\b|sans\b|la saison|saison\b)", request, re.I):
@@ -141,6 +141,8 @@ class Conversation:
         self.lock_users[key] = self.lock_users.get(key, 0) + 1
         try:
             async with lock:
+                if not allowed_user(message.author.id):
+                    return
                 await self.respond(message, key)
         except asyncio.CancelledError:
             raise
@@ -205,7 +207,7 @@ class Conversation:
         if answer in {"non", "annule", "annuler", "stop"}:
             self.store.set(key, None)
             self.remember(key, "assistant", "Proposition annulée : rien de nouveau n'a été ajouté.")
-            note = " Une demande déjà confirmée peut être en cours : consulte `/plex operations`." if state.get("uncertain") else ""
+            note = " Une demande déjà confirmée peut être en cours : consulte `/telechargements`." if state.get("uncertain") else ""
             await self.say(message, "Conversation annulée." + note)
             return
         if state["phase"] == "identify":
@@ -259,7 +261,7 @@ class Conversation:
             return
         if answer.isdigit():
             if state.get("uncertain"):
-                await self.say(message, "L’ajout précédent est incertain. Réponds « oui » pour vérifier cette même demande, ou consulte `/plex operations`.")
+                await self.say(message, "L’ajout précédent est incertain. Réponds « oui » pour vérifier cette même demande, ou consulte `/telechargements`.")
                 return
             index = int(answer) - 1
             if not 0 <= index < len(state["items"]):
@@ -287,13 +289,13 @@ class Conversation:
         self.store.set(key, None)
         self.remember(key, "assistant", f"Demande enregistrée : {task['id']} pour {item['title']}.")
         warning = "\n⚠️ " + item["availability_warning"] if item.get("availability_warning") else ""
-        await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/plex operations`. En mode test, rien ne sera téléchargé." + warning)
+        await self.say(message, f"Demande enregistrée : `{task['id']}`. Le module Plex gère la suite ; consulte `/telechargements`. En mode test, rien ne sera téléchargé." + warning)
 
     async def search(self, message, key, request, source=None):
         if self.private_mode:
             current = self.store.get(key)
             if current and current.get("uncertain"):
-                await self.say(message, "L’ajout précédent est incertain. Consulte `/plex operations` avant une nouvelle demande.")
+                await self.say(message, "L’ajout précédent est incertain. Consulte `/telechargements` avant une nouvelle demande.")
                 return
             from manager.discord.private_search import SearchInvite
             self.save(key, {"phase": "private", "user_request": source or request})
@@ -304,7 +306,7 @@ class Conversation:
             return
         current = self.store.get(key)
         if current and current.get("uncertain"):
-            await self.say(message, "L’ajout précédent est incertain ; réponds « oui » pour vérifier cette même demande ou consulte `/plex operations`.")
+            await self.say(message, "L’ajout précédent est incertain ; réponds « oui » pour vérifier cette même demande ou consulte `/telechargements`.")
             return
         if len(request) > 1800:
             await self.say(message, "Raccourcis ta demande, puis recommence avec « bot cherche … ».")

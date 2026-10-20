@@ -36,7 +36,7 @@ Générer trois clés aléatoires distinctes avec un gestionnaire de mots de pas
 Le gestionnaire a besoin du token Discord, de `DISCORD_GUILD_ID`, des identifiants
 d’administrateurs et des salons autorisés dans `DISCORD_NOTIFICATION_CHANNEL_IDS`.
 Les administrateurs sont refusés par défaut si leur liste est vide. Une liste
-`DISCORD_ALLOWED_USER_IDS` vide permet l’usage normal par les utilisateurs du bot.
+`DISCORD_ALLOWED_USER_IDS` vide conserve initialement un accès ouvert. Les commandes `/admin utilisateurs` permettent ensuite de gérer les autorisations persistantes et le mode ouvert/restreint, sans éditer le `.env`. Voir le [guide utilisateur](guide-utilisateur.md).
 Les slash commands fonctionnent sans Message Content Intent. Le mode
 conversation ci-dessous nécessite son activation explicite.
 
@@ -65,7 +65,7 @@ bot quelle différence entre 720p et 1080p ?
 ```
 
 Le bot demande éventuellement de préciser l’œuvre, puis effectue une recherche complète et propose
-le résultat le mieux classé dans une interface privée. Depuis un message `bot` ou `man`, cliquer sur **Continuer en privé**; `/plex demande` ouvre directement la réponse privée. Choisir les œuvres et torrents dans les menus, naviguer avec les boutons (20 œuvres par page), puis cliquer sur **Confirmer l’ajout** ou **Annuler**. Le bouton **Préciser la demande** ouvre un formulaire privé. Les nouveaux boutons remplacent les réponses « oui », numéros et « suivant » dans le salon. Les sessions et boutons sont réservés à l’auteur et expirent après cinq minutes sans interaction.
+le résultat le mieux classé dans une interface privée. Depuis un message `bot` ou `man`, cliquer sur **Continuer en privé**; `/recherchetorrent` ouvre directement la réponse privée. Choisir les œuvres et torrents dans les menus, naviguer avec les boutons (20 œuvres par page), puis cliquer sur **Confirmer l’ajout** ou **Annuler**. Le bouton **Corriger la recherche** ouvre un formulaire privé. Les nouveaux boutons remplacent les réponses « oui », numéros et « suivant » dans le salon. Les sessions et boutons sont réservés à l’auteur et expirent après cinq minutes sans interaction.
 
 Une saison demandée conserve seulement les packs identifiés comme cette saison;
 un épisode demandé conserve seulement cet épisode. Les titres sans saison
@@ -74,7 +74,7 @@ des mots de la demande actuelle; une précision peut reprendre les critères de 
 proposition en attente, mais une nouvelle recherche ne reprend pas les anciens filtres.
 Une année absente du nom du torrent est acceptée avec un avertissement de vérification;
 une année explicitement différente reste exclue.
-Les recherches naturelles (`bot …` et `/plex demande`) appliquent ensuite des
+Les recherches naturelles (`bot …` et `/recherchetorrent`) appliquent ensuite des
 règles fixes : qualité demandée, AV1 exclu, MULTI préféré, seeds positifs préférés
 aux seeds inconnus, puis taille croissante. La préférence MULTI est remplacée par
 la langue explicitement demandée. Les torrents avec seeds positifs sont retenus
@@ -91,7 +91,7 @@ Sans qualité précisée, `SEARCH_DEFAULT_QUALITY=1080p` dans `manager/.env` ser
 valeur par défaut (2160p, 1080p, 720p ou 480p). Si cette qualité n'est pas disponible,
 le bot demande l'accord pour une autre qualité compatible, puis présente un torrent
 à confirmer séparément : choisir une qualité dans le menu ne lance aucun téléchargement. Avec
-`/plex demande`, les qualités disponibles sont indiquées pour relancer la commande.
+`/recherchetorrent`, les qualités disponibles sont indiquées pour relancer la commande.
 Sans résultat compatible, aucun ajout n'est proposé. Le formulaire historique
 `/recherchetorrent` conserve son tri manuel.
 
@@ -170,10 +170,10 @@ ne doivent pas transiter en HTTP sur un réseau non fiable.
 Vérifier successivement :
 
 1. Les réponses authentifiées `/health` des deux API et `/services` du gestionnaire.
-2. La connexion Discord (`discord: ready` dans `/health`) et `/info`, puis `/status`.
+2. La connexion Discord (`discord: ready` dans `/health`) et `/aide`, puis `/telechargements`.
 3. Une recherche classique avec ses menus et la confirmation en mode test.
-4. `/plex demande` et une interprétation correcte du titre, de l’année et des filtres.
-5. `/plex operations` avec une tâche `simulated` et une notification dans un salon autorisé.
+4. `/recherchetorrent` et une interprétation correcte du titre, de l’année et des filtres.
+5. `/telechargements` avec une tâche `simulated` et un suivi privé, sans notification publique.
 6. Le repli local lorsque le PC secondaire est éteint.
 
 Les identifiants de salon et les permissions Discord doivent permettre au bot

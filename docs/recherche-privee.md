@@ -3,7 +3,7 @@
 ## Discord
 
 - `man cherche Harry Potter` ou une demande naturelle de recherche affiche un bouton **Continuer en privé**. Le message de départ de l’utilisateur et ce bouton restent visibles dans le salon; les résultats suivants sont une réponse éphémère visible uniquement par l’auteur. Les messages normaux Discord ne peuvent pas recevoir directement une réponse éphémère sans clic.
-- `/plex demande texte:Harry Potter` ouvre directement la recherche privée.
+- `/recherchetorrent query:Harry Potter` ouvre directement la recherche privée.
 - Les formulations courantes `man ajoute …`, `man cherche …`, `man trouve …`, `man télécharge …`, `man mets-moi …` ou `man tu peux me trouver …` ouvrent directement ce même parcours, sans passer par la classification conversationnelle de l’IA. `bot` fonctionne aussi, sans distinction de casse. Le titre et les critères sont ensuite analysés normalement : « ajoute » ne contourne jamais la confirmation. Les autres formulations conservent le routage habituel.
 - Le message privé affiche **J’ai compris : rechercher …**, le type compris, l’année, la saison/épisode, la qualité demandée ou par défaut, la langue et l’exclusion AV1. Le titre compris apparaît aussi pendant la vérification TMDb et la recherche sur les trackers. Vérifier ces indications avant de confirmer un ajout.
 - Le bilan distingue les résultats reçus et retenus. Si aucun torrent n’est proposé, le bot différencie l’absence de résultats transmis, les exclusions par critères et une recherche incomplète lorsque des indexers sont en erreur. Les motifs d’exclusion peuvent se cumuler sur un même torrent. Des exemples de formulations conseillées sont proposés, comme `man cherche Les Anneaux de pouvoir S01 en 1080p` ou `man ajoute Charlie et la Chocolaterie 2005 en 1080p`. **Corriger la recherche** ouvre la demande initiale préremplie ; modifier la formulation ne garantit pas d’autres résultats.
@@ -15,7 +15,7 @@
 - Un autre choix de qualité relance la recherche sans télécharger. **Corriger la recherche** ouvre un formulaire privé pour corriger le titre ou les critères. **Annuler** ne crée aucun ajout.
 - Les boutons et formulaires vérifient à nouveau l’auteur et les permissions. Une ancienne vue, une page précédente ou une session expirée ne peut pas confirmer une nouvelle sélection. Les contrôles expirent après cinq minutes d’inactivité; les sessions ne sont pas reprises après redémarrage du gestionnaire.
 - Si le module ne confirme pas l’ajout, **Vérifier l’ajout** renvoie exactement la même demande. Les changements de torrent et de critères restent bloqués pour éviter un doublon.
-- Les demandes privées ne publient pas leurs notifications de progression dans les salons, même si `ALERT_CHANNEL_ID` est renseigné. **Actualiser le suivi** et `/plex operations` permettent de consulter l’état en privé. Les administrateurs conservent leurs accès aux demandes via les outils d’administration et le dashboard.
+- Les demandes privées ne publient pas leurs notifications de progression dans les salons, même si `ALERT_CHANNEL_ID` est renseigné. **Actualiser le suivi** et `/telechargements` permettent de consulter l’état en privé. Les administrateurs conservent leurs accès aux demandes via les outils d’administration et le dashboard.
 - Les discussions générales et consultations de bibliothèque déclenchées dans un salon restent des réponses de conversation normales. La recherche par messages exige toujours les salons configurés et Message Content Intent.
 
 ## Dashboard : vider tous les logs

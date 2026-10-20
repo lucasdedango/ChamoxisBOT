@@ -7,6 +7,7 @@ les événements, la supervision et Ollama ; `modules/plex/` pour les recherches
 téléchargements et imports. Elles communiquent par API HTTP authentifiée.
 
 - [Installation et démarrage Windows](docs/windows.md)
+- [Guide utilisateur et commandes Discord](docs/guide-utilisateur.md)
 - [Dashboard local et mises à jour par branche](docs/dashboard.md)
 - [Architecture, API et événements](docs/architecture.md)
 - [Bilan de migration et limites](docs/migration.md)
@@ -16,9 +17,10 @@ Double-cliquer sur **`dashboard.bat`** pour ouvrir le panneau local sur
 logs et mises à jour GitHub avec choix de branche, aperçu et sauvegarde.
 Il utilise `.venv-manager`; **`start.bat`** lance les deux applications du bot.
 
-Exemple de nouvelle commande : `/plex demande texte:Ajoute Dune de 2021 en français en 1080p`.
-L’IA propose une interprétation, l’utilisateur lance la recherche, sélectionne un résultat,
-puis confirme explicitement l’ajout. Les commandes historiques restent disponibles.
+Exemple : `/recherchetorrent query:Dune de 2021 en français en 1080p`.
+Le parcours privé identifie l’œuvre, demande les précisions nécessaires et propose un torrent à confirmer.
+`/aide` ouvre le guide interactif ; `/telechargements` affiche tes demandes. Les doublons historiques
+sont remplacés par `/ajoutertorrent`, `/ia` et les outils réservés à `/admin`.
 
 Le mode conversation optionnel interprète les messages commençant par `bot` :
 `bot, trouve Grey’s Anatomy S11`, `bot pourquoi mon dernier téléchargement est bloqué ?`

@@ -32,7 +32,7 @@ Les identifiants sont ceux des bibliothèques Plex, pas des dossiers. Laisser le
 - `man qu’est-ce que je peux regarder comme série de SF sur le Plex ?` consulte les séries réellement présentes et leur genre Plex. SF et science-fiction sont équivalents.
 - `bot cherche Dune` demande quelle adaptation choisir lorsque TMDb trouve plusieurs œuvres. Cliquer sur « Continuer en privé », choisir l’œuvre dans le menu, puis confirmer le torrent avec le bouton dédié.
 - `man trouve Below saison 1 de 2026 en 1080p` utilise les titres français/originaux et les identifiants de l’œuvre choisie.
-- `/plex demande` propose également un choix d’œuvre, puis la recherche et une confirmation d’ajout.
+- `/recherchetorrent` propose également un choix d’œuvre, puis la recherche et une confirmation d’ajout.
 - Le dashboard affiche les fiches, résumés, affiches et liens TMDb/IMDb. L’onglet Bibliothèque Plex filtre les contenus présents par type, titre et genre.
 
 Les recommandations sont classées selon la note renseignée par Plex. Le bot n’invente pas une disponibilité à partir d’une fiche TMDb et ne connaît pas tes goûts personnels ni ton historique de visionnage. Les échanges généraux utilisent toujours Ollama.
@@ -55,9 +55,9 @@ This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## Une seule recherche complète
 
-La recherche complète est utilisée dès le départ sur Discord, avec `/plex demande`, dans les commandes classiques et dans le dashboard. Il n’y a plus de passage préalable par une recherche simple. Les recherches larges par titre restent présentes pour retrouver les releases sans année; elles sont combinées aux identifiants et aux variantes ciblées.
+La recherche complète est utilisée dès le départ sur Discord, avec `/recherchetorrent`, dans les commandes classiques et dans le dashboard. Il n’y a plus de passage préalable par une recherche simple. Les recherches larges par titre restent présentes pour retrouver les releases sans année; elles sont combinées aux identifiants et aux variantes ciblées.
 
-Le bouton **Préciser la demande** ouvre un formulaire privé pour ajuster l’œuvre ou les critères. Un ancien bouton ne peut pas confirmer une proposition remplacée. Un ajout dont la confirmation reste incertaine conserve sa protection : seul **Vérifier l’ajout** est proposé, avec le même identifiant de demande.
+Le bouton **Corriger la recherche** ouvre un formulaire privé pour ajuster l’œuvre ou les critères. Un ancien bouton ne peut pas confirmer une proposition remplacée. Un ajout dont la confirmation reste incertaine conserve sa protection : seul **Vérifier l’ajout** est proposé, avec le même identifiant de demande.
 
 Cette stratégie peut être plus lente et reste dépendante de ce que Prowlarr et les indexers exposent. Les délais des clients Discord/dashboard ont été adaptés. Aucun téléchargement n’est confirmé par une recherche ou un choix de fiche.
 
@@ -67,7 +67,7 @@ Le catalogue interroge systématiquement **films et séries**. Le type deviné p
 
 Ainsi, **Harry Potter** présente aussi les films lorsque la série homonyme apparaît. **Dune** demande de choisir entre les œuvres correspondantes. Une année explicite réduit les choix si des fiches correspondent. Un titre précis avec son année peut être sélectionné automatiquement seulement s’il reste une unique correspondance exacte et si les deux recherches TMDb ont réussi.
 
-Discord affiche les fiches par pages de **vingt**, avec un menu indiquant le type et l’année et des boutons **Suivant/Précédent**. `/plex demande` ouvre directement ce parcours privé. Depuis « bot/man cherche… », un bouton public **Continuer en privé** ouvre la suite visible uniquement par l’auteur. Le dashboard affiche également le type film/série. Au plus quarante fiches issues des premières pages films/séries TMDb sont disponibles; un avertissement invite à préciser le titre au-delà. Les premières pages de recherche TMDb sont utilisées, ce qui ne garantit pas un inventaire exhaustif d’une très grande franchise.
+Discord affiche les fiches par pages de **vingt**, avec un menu indiquant le type et l’année et des boutons **Suivant/Précédent**. `/recherchetorrent` ouvre directement ce parcours privé. Depuis « bot/man cherche… », un bouton public **Continuer en privé** ouvre la suite visible uniquement par l’auteur. Le dashboard affiche également le type film/série. Au plus quarante fiches issues des premières pages films/séries TMDb sont disponibles; un avertissement invite à préciser le titre au-delà. Les premières pages de recherche TMDb sont utilisées, ce qui ne garantit pas un inventaire exhaustif d’une très grande franchise.
 
 Si une catégorie TMDb est indisponible, le bot ne sélectionne pas automatiquement l’unique résultat de l’autre catégorie. Si aucune fiche ne correspond à l’année demandée, il demande un choix avec un avertissement. Le choix de fiche mène ensuite aux torrents, puis à une confirmation d’ajout distincte.
 

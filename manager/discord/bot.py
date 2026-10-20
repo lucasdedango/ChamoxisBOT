@@ -2,11 +2,8 @@
 
 All Plex operations use the authenticated HTTP bridge.
 """
-import os, re, json, asyncio, logging
-from pathlib import Path
+import os, re, asyncio, logging
 from typing import Optional, Tuple, List, Dict, TypedDict
-import xml.etree.ElementTree as ET
-import urllib.parse
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -30,10 +27,7 @@ PLEX_URL = PLEX_TOKEN = PLEX_MOVIES_SECTION_ID = PLEX_SERIES_SECTION_ID = ""
 ImportPrefs = dict
 tracked_torrents = {}
 imported_torrents = set()
-known_users = set()
 _background_tasks = set()
-KNOWN_USERS_DB = Path(os.getenv("MANAGER_DATA_DIR", "data/manager")) / "known_users.json"
-KNOWN_USERS_DB.parent.mkdir(parents=True, exist_ok=True)
 intents = discord.Intents.default()
 intents.message_content = bool(ids("DISCORD_CONVERSATION_CHANNEL_IDS"))
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -61,39 +55,6 @@ def spawn_background(coro, *, name: str) -> asyncio.Task:
 
     task.add_done_callback(_finished)
     return task
-
-
-def load_known_users() -> None:
-    global known_users
-    source = KNOWN_USERS_DB if KNOWN_USERS_DB.exists() else Path("known_users.json")
-    if not source.exists():
-        known_users = set()
-        return
-    try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
-    except Exception:
-        logger.exception("Impossible de lire %s", KNOWN_USERS_DB)
-        known_users = set()
-        return
-    if isinstance(payload, list):
-        known_users = {int(v) for v in payload if str(v).isdigit()}
-    else:
-        known_users = set()
-
-
-def save_known_users() -> None:
-    KNOWN_USERS_DB.write_text(
-        json.dumps(sorted(known_users), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def register_known_user(user_id: int) -> bool:
-    if user_id in known_users:
-        return False
-    known_users.add(user_id)
-    save_known_users()
-    return True
 
 
 def parse_torrent_attachment(file: discord.Attachment) -> Dict[str, str]:
@@ -256,7 +217,7 @@ async def send_torznab_results(
         options = response.get("quality_options", [])
         text = "Aucun résultat." if not response["errors"] else "La recherche a échoué ; consulte les logs du module Plex."
         if options:
-            text = f"Aucun résultat compatible en {quality}. Qualités disponibles : {', '.join(options)}. Relance `/plex demande` avec la qualité de ton choix."
+            text = f"Aucun résultat compatible en {quality}. Qualités disponibles : {', '.join(options)}. Relance `/recherchetorrent` avec la qualité de ton choix."
         await interaction.followup.send(text, ephemeral=True)
         return
 
@@ -550,7 +511,6 @@ class TorrentQualitySelect(discord.ui.Select):
 
 @bot.event
 async def setup_hook():
-    load_known_users()
     # Manager and Discord remain available even if the Plex module is down.
     global INDEXER_IDS, INDEXER_LABELS
     try:
@@ -608,24 +568,11 @@ async def on_error(event: str, *args, **kwargs):
     logger.exception("Unhandled Discord event error on %s", event)
 
 
-async def ensure_user_has_read_info(interaction: discord.Interaction) -> bool:
-    if not allowed_user(interaction.user.id):
-        await interaction.response.send_message("Utilisateur non autorisé.", ephemeral=True)
-        return False
+async def check_command_access(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, "command", None), "qualified_name", "")
-    if command_name in {"info", "plex info"} or command_name.startswith(("server ", "ai ")):
+    if command_name == "aide" or allowed_user(interaction.user.id):
         return True
-    if interaction.user.id in known_users:
-        return True
-
-    msg = (
-        "👋 Première utilisation détectée. Pour continuer, lance d'abord `/info`.\n"
-        "Cette étape t'explique le fonctionnement du bot et t'enregistre automatiquement."
-    )
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
+    await interaction.response.send_message("Utilisateur non autorisé. Demande l’accès à un administrateur ; /aide reste accessible.", ephemeral=True)
     return False
 
 
@@ -644,9 +591,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     )
     try:
         if isinstance(error, app_commands.CommandNotFound):
-            msg = "❌ Commande inconnue. Utilise `/info` pour voir les commandes disponibles."
+            msg = "❌ Commande inconnue. Utilise `/aide` pour voir les commandes disponibles."
         else:
-            msg = f"❌ Erreur de commande: {error}"
+            msg = "❌ La commande n’a pas pu être terminée. Réessaie ou consulte /aide ; les détails techniques sont dans les logs."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
@@ -655,9 +602,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         logger.exception("Failed to send app command error message to Discord")
 
 
-@bot.tree.command(name="status", description="Liste les derniers torrents qBittorrent.")
 async def status(interaction: discord.Interaction):
-    logger.info("/status called by %s (%s)", interaction.user, interaction.user.id)
+    logger.info("/admin torrents called by %s (%s)", interaction.user, interaction.user.id)
     await interaction.response.defer(ephemeral=True)
     try:
         items = await qbit.list_torrents(limit=10)
@@ -674,89 +620,25 @@ async def status(interaction: discord.Interaction):
             lines.append(f"- {name} — {progress}% — {state} — cat:{cat}")
 
         await interaction.followup.send("**Derniers torrents :**\n" + "\n".join(lines), ephemeral=True)
-    except Exception as e:
-        logger.exception("/status failed")
-        await interaction.followup.send(f"❌ Erreur qBittorrent : {e}", ephemeral=True)
-
-
-@bot.tree.command(name="rssfeed", description="Consulte un flux RSS Torznab (Prowlarr/Torznab) et ajoute un torrent.")
-@app_commands.describe(
-    url="URL du flux RSS Torznab (par défaut TORZNAB_RSS_URL)",
-    limit="Nombre d'items à afficher (défaut 5)",
-    kind="movies ou series pour choisir la catégorie qBittorrent",
-)
-async def rssfeed(interaction: discord.Interaction, url: str | None = None, limit: int = 5, kind: str = "movies"):
-    logger.info("/rssfeed called by %s (%s)", interaction.user, interaction.user.id)
-    await interaction.response.defer(ephemeral=True)
-    try:
-        params = {"limit": max(1, min(limit, 25))}
-        if url:
-            params["url"] = url
-        items = (await plex_client().request("GET", "/rss", params=params))["items"]
     except Exception:
-        await interaction.followup.send("Impossible de lire le flux RSS via le module Plex.", ephemeral=True)
-        return
-    if not items:
-        await interaction.followup.send("Flux RSS vide ou non lisible.", ephemeral=True)
-        return
-
-    items.sort(key=lambda it: parse_size_bytes(it.get("size", "")), reverse=True)
-    if limit > 0:
-        items = items[:limit]
-
-    lines = []
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['title']} — {human_size(item.get('size', ''))} (`{item.get('pub_date','')}`)")
-
-    embed = discord.Embed(
-        title="Flux RSS (Prowlarr)",
-        description="\n".join(lines)[:4096],
-    )
-    embed.set_footer(text="Sélectionne dans la liste pour ajouter à qBittorrent.")
-
-    category = "movies" if kind.lower().strip() == "movies" else "series"
-    view = RssView(items, category, track=True)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        logger.exception("/admin torrents failed")
+        await interaction.followup.send("Impossible de consulter les torrents actuellement.", ephemeral=True)
 
 
-@bot.tree.command(name="recherchetorrent", description="Assistant interactif de recherche torrent.")
-@app_commands.describe(
-    query="Titre à chercher (ex: Friends ou Friends.S01E01)",
-    indexer="Indexer à utiliser: all (tous), c411 ou torr9",
-)
-async def recherchetorrent(
-    interaction: discord.Interaction,
-    query: str,
-    indexer: str = "all",
-):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    logger.info("/recherchetorrent called by %s (%s), indexer=%s", interaction.user, interaction.user.id, indexer)
-    idx_value = (indexer or "all").strip().lower()
-    if idx_value not in {"all", "c411", "torr9"}:
-        idx_value = "all"
-    mapped_indexer = {"all": "all", "c411": "1", "torr9": "2"}[idx_value]
-
-    default_kind, season, episode = default_mode_from_query(query)
-
-    content = (
-        "Choisis Film / Série puis renseigne les options (dossier cible, saison/épisode), "
-        "et confirme pour lancer la recherche.\n"
-        f"Détection automatique: {'Série' if default_kind == 'series' else 'Film'}"
-    )
-
-    await interaction.edit_original_response(
-        content=content,
-        view=TorrentKindView(query, season, episode, quality=None, indexer=mapped_indexer),
-    )
+@bot.tree.command(name="recherchetorrent", description="Recherche privée de film ou série avec choix de l’œuvre et confirmation")
+@app_commands.describe(query="Titre ou demande complète, ex. Les Anneaux de pouvoir S01 en 1080p")
+async def recherchetorrent(interaction: discord.Interaction, query: str = ""):
+    from manager.discord.commands.plex import demande
+    await demande(interaction, query)
 
 
-@bot.tree.command(name="addtorrent", description="Ajoute un lien magnet/.torrent puis lance le formulaire d'import.")
+@bot.tree.command(name="ajoutertorrent", description="Ajoute un lien magnet/.torrent puis lance le formulaire d'import.")
 @app_commands.describe(
     link="Lien magnet ou URL .torrent",
     file="Fichier .torrent en pièce jointe",
 )
 async def addtorrent(interaction: discord.Interaction, link: str | None = None, file: discord.Attachment | None = None):
-    logger.info("/addtorrent called by %s (%s)", interaction.user, interaction.user.id)
+    logger.info("/ajoutertorrent called by %s (%s)", interaction.user, interaction.user.id)
     if bool(link) == bool(file):
         await interaction.response.send_message("❌ Fournis soit `link`, soit `file` (.torrent), mais pas les deux.", ephemeral=True)
         return
@@ -778,70 +660,11 @@ async def addtorrent(interaction: discord.Interaction, link: str | None = None, 
     )
 
 
-@bot.tree.command(name="cleartorrents", description="Réinitialise la liste virtuelle des torrents suivis.")
-async def cleartorrents(interaction: discord.Interaction):
-    logger.info("/cleartorrents called by %s (%s)", interaction.user, interaction.user.id)
-    if not administrator(interaction.user.id):
-        await interaction.response.send_message("Commande réservée aux administrateurs configurés.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    for task in await plex_client().request("GET", "/tasks"):
-        if task["state"] in {"queued", "downloading", "needs_review"}:
-            await plex_client().request("POST", f"/tasks/{task['id']}/cancel")
-    await interaction.followup.send("Suivis annulés. Les torrents et fichiers existants sont conservés.", ephemeral=True)
-
-
-@bot.tree.command(name="info", description="Guide complet d'utilisation du bot (obligatoire à la 1re utilisation).")
-async def info_cmd(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    newly_registered = register_known_user(interaction.user.id)
-    logger.info("/info called by %s (%s), newly_registered=%s", interaction.user, interaction.user.id, newly_registered)
-
-    text = (
-        "**Bienvenue sur ChamoxisBOT 👋**\n\n"
-        "Ce bot sert à chercher des torrents via Torznab (Prowlarr/Torznab), les ajouter dans qBittorrent, "
-        "suivre le téléchargement puis ranger automatiquement les fichiers pour Plex.\n\n"
-        "**Étape 1 — Commande principale**\n"
-        "- Lance `/recherchetorrent query:<ton titre> indexer:<all|c411|torr9>` (indexer optionnel, défaut `all`).\n"
-        "- Le bot te demande ensuite Film ou Série.\n"
-        "- Tu choisis (ou saisis) le **répertoire cible exact** (ex: `Andor (2022)`).\n"
-        "- Pour les séries, tu peux préciser le mode (complet/épisode) et la saison.\n"
-        "- Tu confirmes puis tu sélectionnes le résultat qui t'intéresse (numérotation identique embed + menu).\n\n"
-        "**Ce que fait le bot ensuite**\n"
-        "1) Demande ta confirmation, puis ajoute le torrent dans qBittorrent.\n"
-        "2) Suit la progression automatiquement.\n"
-        "3) À 100%, range les fichiers dans les bons dossiers Plex (films/séries).\n\n"
-        "**Autres commandes utiles**\n"
-        "- `/status` : voir les derniers torrents et leur état.\n"
-        "- `/rssfeed` : lire un flux RSS Torznab et ajouter un item rapidement.\n"
-        "- `/addtorrent` : ajouter un lien magnet ou URL .torrent.\n"
-        "- `/cleartorrents` : annuler les suivis (administrateurs).\n"
-        "- `/plex demande` : demander un film ou une série avec une phrase naturelle.\n"
-        "- `/plex operations` : consulter tes demandes et imports.\n\n"
-        "**Exemples simples**\n"
-        "- Film: `/recherchetorrent query:gremlins 2 indexer:all` puis dossier `Gremlins 2 (1990)`.\n"
-        "- Série: `/recherchetorrent query:andor s02 indexer:c411` puis dossier `Andor (2022)`.\n\n"
-        "**Important**\n"
-        "- Le bot est réservé à un usage légal.\n"
-        "- Si un import est refusé, vérifie que c'est bien ton torrent (protection par utilisateur)."
-    )
-
-    prefix = "✅ Ton compte est maintenant enregistré, tu peux utiliser toutes les commandes.\n\n" if newly_registered else "ℹ️ Ton compte est déjà enregistré.\n\n"
-    await interaction.edit_original_response(content=prefix + text)
-
-
-# Preserve historical commands and expose the same callbacks under /plex.
-import copy
-bot.tree.interaction_check = ensure_user_has_read_info
-from manager.discord.commands.plex import demande, operations
-from manager.discord.commands import server, ai
-plex_group = app_commands.Group(name="plex", description="Recherche, téléchargements et bibliothèque Plex")
-for command in list(bot.tree.get_commands()):
-    alias = copy.copy(command)
-    alias.parent = None
-    plex_group.add_command(alias)
-plex_group.add_command(app_commands.Command(name="demande", description="Demander un film ou une série en langage naturel", callback=demande))
-plex_group.add_command(app_commands.Command(name="operations", description="Consulter tes téléchargements et imports", callback=operations))
-bot.tree.add_command(plex_group)
-server.register(bot.tree)
+# Older import helpers remain internal; publish only the reviewed command surface.
+from manager.discord.commands.plex import operations
+from manager.discord.commands import admin, ai, help as user_help
+bot.tree.add_command(app_commands.Command(name="telechargements", description="Consulter tes demandes et imports en privé", callback=operations))
+bot.tree.interaction_check = check_command_access
+user_help.register(bot.tree)
 ai.register(bot.tree)
+admin.register(bot.tree, status)

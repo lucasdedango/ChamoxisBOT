@@ -19,6 +19,8 @@ async def serve():
         from manager.discord.bot import bot
         from manager.discord import bot as discord_ui
         from manager.discord.conversation import Conversation
+        from manager.core.permissions import configure as configure_access
+        configure_access(app.state.store)
         discord_ui.conversation = Conversation(app.state.store)
         from manager.core.notifications import Notifications
         app.state.discord_status = "connecting"

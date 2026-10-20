@@ -6,10 +6,9 @@ from manager.core.permissions import administrator
 from manager.discord.bridge import manager_client
 
 
-def register(tree):
-    group = app_commands.Group(name="server", description="État des services du serveur")
+def register(group):
 
-    @group.command(name="status", description="Consulter l’état des services")
+    @group.command(name="services", description="Consulter l’état des services")
     async def status(interaction: discord.Interaction):
         if not administrator(interaction.user.id):
             await interaction.response.send_message("Commande réservée aux administrateurs configurés.", ephemeral=True)
@@ -18,7 +17,7 @@ def register(tree):
         items = await manager_client().request("GET", "/services")
         await interaction.followup.send("\n".join(f"{s['name']} : {s['status']} ({s['attempts']} relances)" for s in items)[:1800] or "Aucun service configuré.", ephemeral=True)
 
-    @group.command(name="restart", description="Relancer un service explicitement géré")
+    @group.command(name="relancer", description="Relancer un service explicitement géré")
     async def restart(interaction: discord.Interaction, service: str):
         if not administrator(interaction.user.id):
             await interaction.response.send_message("Commande réservée aux administrateurs configurés.", ephemeral=True)
@@ -28,7 +27,6 @@ def register(tree):
         from urllib.parse import quote
         try:
             await client.request("POST", "/services/" + quote(service, safe="") + "/restart")
-            await interaction.followup.send("Relance demandée. Consulte `/server status` pour vérifier la santé.", ephemeral=True)
+            await interaction.followup.send("Relance demandée. Consulte `/admin services` pour vérifier la santé.", ephemeral=True)
         except Exception:
             await interaction.followup.send("Relance refusée ou impossible. Consulte la configuration et les logs.", ephemeral=True)
-    tree.add_command(group)

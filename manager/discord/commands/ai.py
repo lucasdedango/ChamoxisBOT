@@ -4,9 +4,7 @@ from manager.discord.bridge import manager_client
 
 
 def register(tree):
-    group = app_commands.Group(name="ai", description="Assistant local Ollama")
-
-    @group.command(name="chat", description="Poser une question à l’IA locale")
+    @tree.command(name="ia", description="Discuter en privé avec l’IA locale")
     async def chat(interaction: discord.Interaction, question: str):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -15,4 +13,3 @@ def register(tree):
                                             allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             await interaction.followup.send("Aucun modèle IA disponible actuellement.", ephemeral=True)
-    tree.add_command(group)
