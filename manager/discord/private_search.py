@@ -11,6 +11,7 @@ from manager.ai.preferences import ground_intent
 from manager.ai.selection import default_quality
 from manager.core.permissions import allowed_user
 from manager.discord.bridge import manager_client, plex_client
+from manager.discord.links import media_title
 from shared.schemas import AddTorrent, Preferences
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,8 @@ class PrivateSearch:
 
     def understood(self):
         title = self.intent.get('title')
-        return f'J’ai compris : rechercher **{escaped(title, 180)}**.' if title and title != 'À préciser' else ''
+        label = media_title(self.intent['media'], 180) if self.intent.get('media') else escaped(title, 180)
+        return f'J’ai compris : rechercher **{label}**.' if title and title != 'À préciser' else ''
 
     def criteria(self):
         intent = self.intent
@@ -235,7 +237,7 @@ class PrivateSearch:
             rows = []
             for index in self.visible_indices():
                 media = self.choices[index]
-                rows.append(f"**{index+1}.** {escaped(media['title'], 110)} ({media.get('year') or 'date inconnue'}) · {'Série' if media['kind']=='series' else 'Film'}")
+                rows.append(f"**{index+1}.** {media_title(media, 80)} ({media.get('year') or 'date inconnue'}) · {'Série' if media['kind']=='series' else 'Film'}")
             embed.description = '\n'.join(rows)
         elif self.stage == 'season':
             embed.title = 'Quelle saison veux-tu ?'
@@ -260,9 +262,6 @@ class PrivateSearch:
             for name in ('codec_warning', 'availability_warning', 'identity_warning'):
                 if item.get(name):
                     embed.description += '\n⚠️ ' + escaped(item[name], 300)
-            media = self.intent.get('media')
-            if media:
-                embed.add_field(name='Œuvre identifiée', value=f"{escaped(media['title'])} ({media.get('year') or '?'})", inline=False)
             if self.stage == 'uncertain':
                 embed.description += '\n⚠️ Confirmation du module non reçue. « Vérifier l’ajout » reprend exactement la même demande, sans doublon.'
             else:
@@ -271,6 +270,9 @@ class PrivateSearch:
             embed.description = escaped(self.notice, 1600)
             if self.stage == 'quality':
                 embed.description += '\nChoisis une autre qualité dans le menu ; cela ne confirme aucun téléchargement.'
+        media = self.intent.get('media')
+        if media and self.stage != 'cancelled':
+            embed.add_field(name='Œuvre identifiée · fiche TMDb', value=f"{media_title(media)} ({media.get('year') or 'date inconnue'})", inline=False)
         if self.warning and self.stage not in {'done', 'cancelled'}:
             embed.add_field(name='Information', value=escaped(self.warning, 650), inline=False)
         if self.stage not in {'done', 'cancelled'}:

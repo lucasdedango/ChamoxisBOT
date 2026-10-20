@@ -9,6 +9,7 @@ import discord
 from manager.core.permissions import allowed_user, administrator, ids
 from manager.discord.bridge import manager_client, plex_client
 from manager.discord.search_requests import search_request
+from manager.discord.links import media_title
 from shared.schemas import AddTorrent, Preferences, ConversationRoute
 from manager.ai.preferences import ground_intent
 from manager.ai.selection import default_quality
@@ -117,7 +118,7 @@ class Conversation:
             return
         lines = ["Voici ce qui est disponible sur Plex" + (" en " + filters["genre"] if filters.get("genre") else "") + " :"]
         for item in result["items"]:
-            title = discord.utils.escape_markdown(item["title"])
+            title = media_title(item, 110)
             lines.append("• **" + title + "**" + (f" ({item['year']})" if item.get("year") else "") + " — " + ", ".join(item.get("genres", [])) + "\n" + discord.utils.escape_markdown(item.get("summary", "")[:130]))
         if not result["items"]:
             lines.append("Aucune œuvre correspondant à ces filtres dans les sections consultées. Les genres sont ceux renseignés dans Plex.")

@@ -12,10 +12,10 @@ PAGES = {
         'Aucune inscription via /info n’est nécessaire. L’accès dépend des autorisations du bot.'),
     'Rechercher': ('Choisir une œuvre et un torrent',
         '1. Écris un titre ou une phrase dans **/recherchetorrent** ; sans texte, utilise le formulaire.\n'
-        '2. Vérifie **J’ai compris** et choisis la bonne œuvre TMDb.\n'
+        '2. Vérifie **J’ai compris**. Clique sur un titre pour consulter sa fiche TMDb, puis choisis l’œuvre dans le menu.\n'
         '3. Choisis la saison entière ou un épisode. La date TMDb indique les saisons à venir.\n'
         '4. Choisis un torrent dans le menu, puis **Confirmer l’ajout**.\n\n'
-        'Les menus ont 20 entrées par page. **Corriger la recherche** modifie ta demande. '
+        'Les menus ont 20 entrées par page. Le lien TMDb reste disponible après le choix. **Corriger la recherche** modifie ta demande. '
         '**Annuler** ferme la recherche. Choisir une œuvre ou un torrent ne lance pas un téléchargement.\n'
         'Résultats privés ; menus valables cinq minutes d’inactivité.'),
     'Messages et discussion': ('Parler au bot',

@@ -190,6 +190,7 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.view.select.options), 20)
         self.assertEqual(len(self.session.embed().description.splitlines()), 20)
         self.assertIn('Page 1/2', self.session.embed().footer.text)
+        self.assertIn('[Film 0](https://www.themoviedb.org/movie/1)', self.session.embed().description)
         await self.button('Suivant').callback(interaction())
         self.assertEqual(self.session.view.select.options[0].value, '20')
         self.assertEqual(len(self.session.view.select.options), 20)
@@ -197,6 +198,7 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         await self.session.view.select.callback(interaction())
         self.assertEqual(self.manager.request.await_args.args[1], '/catalog/media/movies/22')
         self.assertEqual(self.session.stage, 'torrent')
+        self.assertIn('https://www.themoviedb.org/movie/22', str(self.session.embed().to_dict()))
         self.assertEqual(self.adds(), [])
         self.session.view.select._values = ['1']
         await self.session.view.select.callback(interaction())
@@ -364,6 +366,27 @@ class PrivateSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.session.view.select.options), 20)
         self.assertLessEqual(len(self.session.embed().description), 4096)
         self.assertLessEqual(len(self.session.embed()), 6000)
+
+    async def test_tmdb_link_remains_visible_through_season_scope_and_confirmation(self):
+        self.series_without_season()
+        await self.session.start(interaction())
+        for action, value in [('season', '2'), ('whole_season', None), ('confirm', None)]:
+            self.assertIn('https://www.themoviedb.org/tv/1', str(self.session.embed().to_dict()))
+            await self.session.handle(interaction(), self.session.revision, action, value)
+        self.assertEqual(self.session.stage, 'done')
+        self.assertIn('https://www.themoviedb.org/tv/1', str(self.session.embed().to_dict()))
+        self.assertEqual(len(self.adds()), 1)
+
+    async def test_twenty_linked_titles_fit_discord_limits_and_missing_ids_have_no_link(self):
+        self.choices = [{**row, 'title': 'A very long title ' * 20} for row in self.choices]
+        self.catalog = {'items': self.choices}
+        await self.session.start(interaction())
+        self.assertLessEqual(len(self.session.embed().description), 4096)
+        self.assertLessEqual(len(self.session.embed()), 6000)
+        self.assertEqual(self.adds(), [])
+        from manager.discord.links import media_title
+        self.assertNotIn('https://', media_title({'title': 'Unknown', 'kind': 'series'}))
+        self.assertNotIn('evil.example', media_title({'title': 'Show', 'kind': 'series', 'tmdb_url': 'https://evil.example'}))
 
     async def test_unspecified_series_requires_season_and_whole_or_episode_before_search(self):
         self.series_without_season()

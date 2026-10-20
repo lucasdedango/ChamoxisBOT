@@ -61,6 +61,7 @@
     "manager/discord/commands/plex.py",
     "manager/discord/commands/server.py",
     "manager/discord/conversation.py",
+    "manager/discord/links.py",
     "manager/discord/private_search.py",
     "manager/discord/search_requests.py",
     "manager/main.py",
