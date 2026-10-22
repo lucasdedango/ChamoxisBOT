@@ -3,6 +3,9 @@
 `manager/` héberge un seul bot Discord, les notifications, le registre de
 services, la supervision et la passerelle Ollama. `modules/plex/` héberge les
 opérations métier. Aucune application n’importe les classes internes de l’autre.
+`modules/market/` est une application autonome supplémentaire avec son propre
+bot Discord, son token, ses accès et ses données. Elle ne dépend pas des API du
+manager ou de Plex ; le manager peut surveiller sa santé locale sur le port 8762.
 `shared/schemas.py` contient uniquement les contrats Pydantic versionnés.
 `chamoxis_common/` contient l’infrastructure réutilisable : SQLite, transport,
 authentification et journalisation, sans métier Plex ni Discord.

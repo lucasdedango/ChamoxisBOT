@@ -8,6 +8,7 @@ téléchargements et imports. Elles communiquent par API HTTP authentifiée.
 
 - [Installation et démarrage Windows](docs/windows.md)
 - [Guide utilisateur et commandes Discord](docs/guide-utilisateur.md)
+- [Module Market autonome : autre bot Discord pour Leboncoin/Vinted](docs/market.md)
 - [Dashboard local et mises à jour par branche](docs/dashboard.md)
 - [Architecture, API et événements](docs/architecture.md)
 - [Bilan de migration et limites](docs/migration.md)

@@ -25,3 +25,12 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.34.2
 yarl==1.25.1
+cffi==2.1.1
+charset_normalizer==3.5.2
+curl_cffi==0.13.0
+greenlet==3.5.6
+playwright==1.56.0
+pycparser==3.11
+pyee==13.0.1
+requests==2.32.5
+urllib3==2.8.0
