@@ -26,6 +26,29 @@ def interaction(user=42, channel=123):
 
 
 class MarketTests(unittest.IsolatedAsyncioTestCase):
+    def test_browser_window_is_restored_and_tab_focused(self):
+        context, page, session = Mock(), Mock(), Mock()
+        context.new_cdp_session.return_value = session
+        session.send.return_value = {'windowId': 7}
+        rt._show_lbc_page(context, page)
+        session.send.assert_any_call('Browser.setWindowBounds', {
+            'windowId': 7, 'bounds': {'windowState': 'normal'}})
+        session.detach.assert_called_once()
+        page.bring_to_front.assert_called_once()
+        session.send.side_effect = RuntimeError('CDP unavailable')
+        rt._show_lbc_page(context, page)
+        self.assertEqual(page.bring_to_front.call_count, 2)
+
+    async def test_empty_page_notice_does_not_claim_captcha(self):
+        search = {'id': 'lbc-empty', 'name': 'Recherche', 'owner_id': 42, 'enabled': True}
+        rt.SEARCHES.append(search)
+        channel = SimpleNamespace(send=AsyncMock())
+        with patch.object(rt, 'notification_channel', AsyncMock(return_value=channel)):
+            await rt._notify_lbc_verification_required(search, challenge=False)
+        embed = channel.send.call_args.kwargs['embed']
+        self.assertIn('à contrôler', embed.title)
+        self.assertIn('pas forcément un CAPTCHA', embed.description)
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.data = Path(self.tmp.name) / 'market'

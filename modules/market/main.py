@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import re
 from pathlib import Path
 from aiohttp import web
@@ -166,6 +167,8 @@ def main():
     config['data'].mkdir(parents=True, exist_ok=True)
     try:
         with FileLock(str(config['data'] / 'market.lock'), timeout=0):
+            pid_path = config['data'] / 'market.pid'
+            pid_path.write_text(str(os.getpid()), encoding='ascii')
             configure(config['data'] / 'market.log')
             if args.import_legacy:
                 import_legacy(args.import_legacy, config['data'])
@@ -180,7 +183,13 @@ def main():
                 rt.STOP_EVENT.set()
                 store.close()
     except Timeout:
-        raise SystemExit('Une instance Market utilise déjà ce dossier de données.') from None
+        try:
+            pid = (config['data'] / 'market.pid').read_text(encoding='ascii').strip()
+        except OSError:
+            pid = ''
+        detail = f' PID enregistré : {pid} (à vérifier dans le Gestionnaire des tâches).' if pid.isdecimal() else ''
+        raise SystemExit('Une instance Market utilise déjà ce dossier de données.' + detail
+                         + ' Ferme uniquement le processus Market concerné ; supprimer market.lock ne libère pas un verrou actif.') from None
     except (ValueError, OSError) as error:
         raise SystemExit(str(error)) from None
 

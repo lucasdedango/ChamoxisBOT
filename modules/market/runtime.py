@@ -527,6 +527,7 @@ def _start_external_lbc_browser(url: str, config: dict) -> tuple[str, Path]:
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             creationflags=creationflags,
+            close_fds=True,
         )
     except OSError as exc:
         raise RuntimeError(f"Impossible de lancer {label}: {exc}") from exc
@@ -608,6 +609,29 @@ def _fetch_leboncoin_with_browser(url: str, config: dict, *, interactive: bool =
         return status, page.content()
 
 
+def _show_lbc_page(context, page):
+    """Restore the actual Chromium window before focusing its tab."""
+    session = None
+    try:
+        session = context.new_cdp_session(page)
+        window = session.send("Browser.getWindowForTarget")
+        session.send("Browser.setWindowBounds", {
+            "windowId": window["windowId"], "bounds": {"windowState": "normal"},
+        })
+    except Exception as exc:
+        print(f"[LBC-EXTERNAL] restauration fenêtre impossible : {type(exc).__name__}")
+    finally:
+        if session is not None:
+            try:
+                session.detach()
+            except Exception:
+                pass
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+
+
 def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
     """Surveille LBC dans une instance Brave lancée extérieurement par Windows.
 
@@ -661,6 +685,7 @@ def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
                         source = page.content()
                         items = parse_leboncoin(source)
                     except Exception:
+                        source = ""
                         items = []
 
                     if items:
@@ -674,11 +699,9 @@ def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
 
                     if not challenge_notified:
                         print(f"[HUMAN] {search_id} : vérification/restriction détectée (HTTP {status or 'n/a'}), Brave reste ouvert")
-                        try:
-                            page.bring_to_front()
-                        except Exception:
-                            pass
-                        _submit_to_main_loop(_notify_lbc_verification_required(search))
+                        _show_lbc_page(context, page)
+                        _submit_to_main_loop(_notify_lbc_verification_required(
+                            search, challenge=looks_blocked(source) or status in (403, 429)))
                         challenge_notified = True
 
                     page.wait_for_timeout(poll_ms)
@@ -977,16 +1000,19 @@ async def send_system_alert(channel: discord.TextChannel, search: dict, title: s
     await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
-async def _notify_lbc_verification_required(search: dict) -> None:
+async def _notify_lbc_verification_required(search: dict, *, challenge=True) -> None:
     if not search_is_active(search):
         return
     channel = await notification_channel()
     if channel is None:
         return
     embed = discord.Embed(
-        title="🧩 Vérification Leboncoin requise",
+        title="🧩 Vérification Leboncoin requise" if challenge else "⚠️ Page Leboncoin à contrôler",
         description=(
-            "Leboncoin demande une vérification manuelle. **La fenêtre Brave reste ouverte** sur le serveur.\n\n"
+            ("Leboncoin semble demander une vérification manuelle. " if challenge else
+             "Aucune annonce lisible : recherche vide, page en chargement ou lecture impossible ; ce n’est pas forcément un CAPTCHA. ")
+            + "Le bot a demandé l’affichage de la fenêtre Brave/Chrome/Edge sur le PC qui exécute Market. "
+            "Vérifie la barre des tâches et la session Windows de ce PC (pas celle du téléphone ou d’un autre PC).\n\n"
             "Résous simplement la vérification dans cette fenêtre. Le bot surveille la page en arrière-plan et "
             "reprendra automatiquement dès que les annonces seront de nouveau accessibles.\n\n"
             "Pendant ce temps, les autres recherches (par exemple Vinted) continuent de fonctionner."

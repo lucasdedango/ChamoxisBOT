@@ -66,6 +66,25 @@ de ce module d’utiliser le même dossier de données.
 
 ## Reprendre les données de l’ancien bot
 
+### Fenêtre de vérification et instance déjà active
+
+Lorsqu’une page demande une intervention, Market tente de restaurer la fenêtre
+Brave/Chrome/Edge et de sélectionner son onglet. Elle apparaît sur le PC et dans
+la session Windows qui exécutent Market : une tâche sans session interactive
+ne peut pas afficher une fenêtre sur ton bureau. Une page sans annonce lisible
+est signalée séparément ; elle ne prouve pas la présence d’un CAPTCHA.
+
+Pour arrêter Market, utiliser Ctrl+C dans sa fenêtre et attendre la fin du
+processus. Si le redémarrage signale une instance active, vérifier le PID indiqué
+dans le Gestionnaire des tâches (onglet Détails, colonne Ligne de commande).
+Terminer uniquement le Python dont la commande contient `modules.market.main`,
+puis relancer. Ne pas arrêter les Python de Plex ou du manager. La présence du
+fichier `market.lock` seule est normale : le supprimer ne libère pas un verrou
+détenu par un processus. Le PID enregistré peut être ancien ; toujours vérifier
+la commande avant de terminer un processus.
+
+## Migration des données
+
 Arrêter l’ancien processus, conserver son dossier comme sauvegarde, puis copier
 ses JSON avec cette commande (le dossier Market de destination ne doit pas encore
 contenir `config.json`, `searches.json` ou `state.json`) :
