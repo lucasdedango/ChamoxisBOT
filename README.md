@@ -16,7 +16,7 @@ téléchargements et imports. Elles communiquent par API HTTP authentifiée.
 Double-cliquer sur **`dashboard.bat`** pour ouvrir le panneau local sur
 `http://127.0.0.1:8765` : services, téléchargements, recherche, IA, réglages,
 logs et mises à jour GitHub avec choix de branche, aperçu et sauvegarde.
-Il utilise `.venv-manager`; **`start.bat`** lance les deux applications du bot.
+Il utilise `.venv-manager`; **`start.bat`** lance Plex, le manager et le bot Market dans trois fenêtres distinctes.
 
 Exemple : `/recherchetorrent query:Dune de 2021 en français en 1080p`.
 Le parcours privé identifie l’œuvre, demande les précisions nécessaires et propose un torrent à confirmer.

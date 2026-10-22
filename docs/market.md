@@ -49,7 +49,9 @@ $env:MARKET_ENV_FILE = 'modules/market/.env'
 .\.venv-market\Scripts\python.exe -m modules.market.main --check
 ```
 
-Puis double-cliquer sur **`scripts\start-market.bat`**, ou lancer :
+Puis double-cliquer sur **`start.bat`** à la racine pour lancer Plex, le manager
+et Market dans trois fenêtres. Pour lancer uniquement Market, utiliser
+**`scripts\start-market.bat`**, ou lancer :
 
 ```powershell
 $env:MARKET_ENV_FILE = 'modules/market/.env'
@@ -57,8 +59,8 @@ $env:MARKET_ENV_FILE = 'modules/market/.env'
 ```
 
 Plex, le manager et Market peuvent fonctionner simultanément, chacun dans son
-processus. `start.bat` conserve son comportement Plex/manager ; Market se lance
-séparément. Les dépendances sont dans `.venv-market`. Ne pas lancer l’ancien
+processus. Les dépendances de Market sont dans `.venv-market` et sa configuration
+dans `modules/market/.env`. Ne pas lancer l’ancien
 `market_bot.py` en parallèle après migration. Un verrou empêche deux instances
 de ce module d’utiliser le même dossier de données.
 
