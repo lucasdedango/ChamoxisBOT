@@ -45,9 +45,41 @@ class MarketTests(unittest.IsolatedAsyncioTestCase):
         channel = SimpleNamespace(send=AsyncMock())
         with patch.object(rt, 'notification_channel', AsyncMock(return_value=channel)):
             await rt._notify_lbc_verification_required(search, challenge=False)
-        embed = channel.send.call_args.kwargs['embed']
-        self.assertIn('à contrôler', embed.title)
-        self.assertIn('pas forcément un CAPTCHA', embed.description)
+        channel.send.assert_not_awaited()
+
+    def test_captcha_gate_pauses_only_other_leboncoin_tasks(self):
+        with patch.object(rt, 'LBC_CAPTCHA_OWNER', 'lbc-a'):
+            self.assertTrue(rt.lbc_paused({'id': 'lbc-b', 'site': 'leboncoin'}))
+            self.assertFalse(rt.lbc_paused({'id': 'lbc-a', 'site': 'leboncoin'}))
+            self.assertFalse(rt.lbc_paused({'id': 'vinted', 'site': 'vinted'}))
+        with patch.object(rt, 'LBC_CAPTCHA_OWNER', None):
+            self.assertFalse(rt.lbc_paused({'id': 'lbc-b', 'site': 'leboncoin'}))
+
+    def test_browser_label_identifies_search_without_interpolating_script(self):
+        page = Mock()
+        rt._label_lbc_page(page, {'id': 'lbc-a', 'name': 'Recherche "test"'})
+        self.assertEqual(page.evaluate.call_args.args[1], 'Market · Recherche "test" [lbc-a]')
+
+    def test_same_url_does_not_reuse_another_tasks_tab(self):
+        url = 'https://www.leboncoin.fr/recherche?text=velo'
+        existing, created, context = Mock(), Mock(), Mock()
+        existing.url = url
+        existing.evaluate.return_value = 'market:other-task'
+        context.pages = [existing]
+        context.new_page.return_value = created
+        result = rt._find_lbc_page(context, url, 'new-task')
+        self.assertIs(result, created)
+        created.evaluate.assert_called_once_with('name => { window.name = name; }', 'market:new-task')
+        created.goto.assert_called_once()
+
+    async def test_paused_leboncoin_manual_check_does_not_fetch(self):
+        search = {'id': 'lbc-b', 'site': 'leboncoin', 'owner_id': 42, 'enabled': True}
+        rt.SEARCHES.append(search)
+        with patch.object(rt, 'LBC_CAPTCHA_OWNER', 'lbc-a'), patch.object(rt, 'fetch_search') as fetch:
+            ok, message = await rt.run_search(search, manual=True)
+        self.assertFalse(ok)
+        self.assertIn('pause', message)
+        fetch.assert_not_called()
 
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()

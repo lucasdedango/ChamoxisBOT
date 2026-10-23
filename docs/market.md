@@ -71,8 +71,16 @@ de ce module d’utiliser le même dossier de données.
 Lorsqu’une page demande une intervention, Market tente de restaurer la fenêtre
 Brave/Chrome/Edge et de sélectionner son onglet. Elle apparaît sur le PC et dans
 la session Windows qui exécutent Market : une tâche sans session interactive
-ne peut pas afficher une fenêtre sur ton bureau. Une page sans annonce lisible
-est signalée séparément ; elle ne prouve pas la présence d’un CAPTCHA.
+ne peut pas afficher une fenêtre sur ton bureau. Les onglets portent le nom et l’identifiant de leur recherche ; deux tâches
+avec la même URL gardent des onglets distincts. Lorsqu’un CAPTCHA est détecté,
+toutes les autres tâches Leboncoin attendent, y compris les vérifications
+manuelles. Vinted continue. Les tâches Leboncoin reprennent lorsque la page
+concernée est à nouveau accessible, même si sa recherche est vide. Les contrôles
+navigateur Leboncoin sont sérialisés pour éviter des navigations concurrentes
+pendant la détection. Si l’onglet ou le navigateur est fermé avant résolution,
+la pause reste active : relancer la vérification de cette recherche.
+Une recherche vide ne déclenche aucune alerte publique ; une page illisible
+sans signe de CAPTCHA est uniquement journalisée.
 
 Pour arrêter Market, utiliser Ctrl+C dans sa fenêtre et attendre la fin du
 processus. Si le redémarrage signale une instance active, vérifier le PID indiqué

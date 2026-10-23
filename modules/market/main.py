@@ -72,6 +72,7 @@ def initialize(config):
     rt.STATE, rt.next_due = state, {}
     rt.search_lock = asyncio.Lock()
     rt.STOP_EVENT.clear()
+    rt.LBC_CAPTCHA_OWNER = None
     store = Store(data / 'access.sqlite3')
     rt.ACCESS = Access(store, config['admins'], config['users'])
     return store

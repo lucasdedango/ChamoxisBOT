@@ -48,6 +48,8 @@ VINTED_ORIGIN = "https://www.vinted.fr"
 LEBONCOIN_ORIGIN = "https://www.leboncoin.fr"
 LBC_BROWSER_PROFILE = BASE_DIR / "browser_profile_lbc"
 LBC_BROWSER_LOCK = threading.Lock()
+LBC_CYCLE_LOCK = threading.Lock()
+LBC_CAPTCHA_OWNER: str | None = None
 LBC_VERIFICATION_LOCK = threading.Lock()
 LBC_VERIFICATION_ACTIVE: set[str] = set()
 MAIN_LOOP: asyncio.AbstractEventLoop | None = None
@@ -541,21 +543,28 @@ def _start_external_lbc_browser(url: str, config: dict) -> tuple[str, Path]:
     raise RuntimeError(f"{label} s'est lancé mais le port DevTools {port} ne répond pas")
 
 
-def _find_lbc_page(context, search_url: str):
+def _find_lbc_page(context, search_url: str, search_id: str | None = None):
     """Réutilise l'onglet LBC déjà ouvert, sinon crée un onglet dans le même Brave."""
     for page in context.pages:
         try:
             host = urlparse(page.url).hostname or ""
             if host in SUPPORTED_HOSTS["leboncoin"] and page.url == search_url:
+                if search_id is not None:
+                    owner = page.evaluate("() => window.name")
+                    if owner and owner != "market:" + search_id:
+                        continue
+                    page.evaluate("name => { window.name = name; }", "market:" + search_id)
                 return page
         except Exception:
             pass
     page = context.new_page()
+    if search_id is not None:
+        page.evaluate("name => { window.name = name; }", "market:" + search_id)
     page.goto(search_url, wait_until="domcontentloaded", timeout=40_000)
     return page
 
 
-def _attach_external_lbc_browser(p, search_url: str, config: dict):
+def _attach_external_lbc_browser(p, search_url: str, config: dict, search_id: str | None = None):
     with LBC_BROWSER_LOCK:
         label, exe = _start_external_lbc_browser(search_url, config)
     cdp = _lbc_cdp_url(config)
@@ -564,7 +573,7 @@ def _attach_external_lbc_browser(p, search_url: str, config: dict):
     if not browser.contexts:
         raise RuntimeError("Brave est attaché mais aucun contexte navigateur n'est disponible")
     context = browser.contexts[0]
-    page = _find_lbc_page(context, search_url)
+    page = _find_lbc_page(context, search_url, search_id)
     print(f"[LBC-EXTERNAL] attaché à {label}; Playwright n'a pas lancé le navigateur")
     return browser, context, page, label, exe
 
@@ -632,6 +641,27 @@ def _show_lbc_page(context, page):
         pass
 
 
+def lbc_paused(search: dict) -> bool:
+    return search.get("site") == "leboncoin" and LBC_CAPTCHA_OWNER not in (None, search["id"])
+
+
+def _wait_lbc_turn(search: dict) -> bool:
+    while search_is_active(search):
+        if not lbc_paused(search) and LBC_CYCLE_LOCK.acquire(timeout=0.2):
+            if not lbc_paused(search):
+                return True
+            LBC_CYCLE_LOCK.release()
+        STOP_EVENT.wait(0.2)
+    return False
+
+
+def _label_lbc_page(page, search):
+    try:
+        page.evaluate("label => { document.title = label; }", f"Market · {search['name']} [{search['id']}]")
+    except Exception:
+        pass
+
+
 def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
     """Surveille LBC dans une instance Brave lancée extérieurement par Windows.
 
@@ -639,8 +669,9 @@ def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
     crée pas le processus navigateur. En cas de CAPTCHA/restriction, l'onglet est
     laissé visible jusqu'à l'intervention de l'utilisateur.
     """
+    global LBC_CAPTCHA_OWNER
     search_id = search["id"]
-    challenge_notified = False
+    challenge_notified = LBC_CAPTCHA_OWNER == search_id
     try:
         if sync_playwright is None:
             raise RuntimeError("Playwright n'est pas installé")
@@ -649,62 +680,86 @@ def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
 
         print(f"[LBC-EXTERNAL] {search_id} : préparation de Brave externe")
         with sync_playwright() as p:
-            browser, context, page, browser_label, browser_exe = _attach_external_lbc_browser(p, search["url"], config)
+            if not _wait_lbc_turn(search):
+                return
+            try:
+                browser, context, page, browser_label, browser_exe = _attach_external_lbc_browser(p, search["url"], config, search_id)
+                _label_lbc_page(page, search)
+            finally:
+                LBC_CYCLE_LOCK.release()
             print(f"[LBC-EXTERNAL] {search_id} : navigateur utilisé : {browser_label} ({browser_exe})")
             first_cycle = True
 
             while search_is_active(search):
-                if page.is_closed():
-                    # L'utilisateur a peut-être fermé seulement l'onglet : en reprendre/créer un.
-                    page = _find_lbc_page(context, search["url"])
-
-                # Au premier passage on NE recharge PAS : Brave vient d'être lancé avec
-                # l'URL exactement comme si elle avait été ouverte depuis Windows. Cela évite
-                # deux navigations rapprochées. Les cycles suivants font seulement un F5.
-                if first_cycle:
-                    print(f"[LBC-EXTERNAL] {search_id} : première page laissée telle quelle (aucun double chargement)")
-                    status = 0
-                    first_cycle = False
-                    page.wait_for_timeout(int(config.get("leboncoin_initial_settle_ms", 4000)))
-                else:
-                    try:
-                        if page.url and "leboncoin.fr" in page.url:
-                            print(f"[LBC-EXTERNAL] {search_id} : F5 de l'onglet existant")
-                            response = page.reload(wait_until="domcontentloaded", timeout=nav_timeout_ms)
-                        else:
-                            print(f"[LBC-EXTERNAL] {search_id} : retour sur la recherche")
-                            response = page.goto(search["url"], wait_until="domcontentloaded", timeout=nav_timeout_ms)
-                        status = int(response.status) if response is not None else 0
-                    except PlaywrightTimeoutError:
-                        status = 0
-
-                while search_is_active(search):
+                if not _wait_lbc_turn(search):
+                    break
+                try:
                     if page.is_closed():
-                        raise RuntimeError("L'onglet Leboncoin a été fermé pendant la vérification.")
-                    try:
-                        source = page.content()
-                        items = parse_leboncoin(source)
-                    except Exception:
-                        source = ""
-                        items = []
+                        # L'utilisateur a peut-être fermé seulement l'onglet : en reprendre/créer un.
+                        page = _find_lbc_page(context, search["url"], search_id)
 
-                    if items:
-                        if challenge_notified:
-                            print(f"[LBC-EXTERNAL] {search_id} : vérification résolue, {len(items)} annonce(s) détectée(s)")
-                        else:
-                            print(f"[LBC-EXTERNAL] {search_id} : {len(items)} annonce(s) détectée(s)")
-                        _submit_to_main_loop(_process_lbc_persistent_items(search, items, recovered=challenge_notified))
-                        challenge_notified = False
-                        break
+                    # Au premier passage on NE recharge PAS : Brave vient d'être lancé avec
+                    # l'URL exactement comme si elle avait été ouverte depuis Windows. Cela évite
+                    # deux navigations rapprochées. Les cycles suivants font seulement un F5.
+                    if first_cycle:
+                        print(f"[LBC-EXTERNAL] {search_id} : première page laissée telle quelle (aucun double chargement)")
+                        status = 0
+                        first_cycle = False
+                        page.wait_for_timeout(int(config.get("leboncoin_initial_settle_ms", 4000)))
+                    else:
+                        try:
+                            if page.url and "leboncoin.fr" in page.url:
+                                print(f"[LBC-EXTERNAL] {search_id} : F5 de l'onglet existant")
+                                response = page.reload(wait_until="domcontentloaded", timeout=nav_timeout_ms)
+                            else:
+                                print(f"[LBC-EXTERNAL] {search_id} : retour sur la recherche")
+                                response = page.goto(search["url"], wait_until="domcontentloaded", timeout=nav_timeout_ms)
+                            status = int(response.status) if response is not None else 0
+                        except PlaywrightTimeoutError:
+                            status = 0
 
-                    if not challenge_notified:
-                        print(f"[HUMAN] {search_id} : vérification/restriction détectée (HTTP {status or 'n/a'}), Brave reste ouvert")
-                        _show_lbc_page(context, page)
-                        _submit_to_main_loop(_notify_lbc_verification_required(
-                            search, challenge=looks_blocked(source) or status in (403, 429)))
-                        challenge_notified = True
+                    while search_is_active(search):
+                        if page.is_closed():
+                            raise RuntimeError("L'onglet Leboncoin a été fermé pendant la vérification.")
+                        try:
+                            source = page.content()
+                            items = parse_leboncoin(source)
+                        except Exception:
+                            source = ""
+                            items = []
 
-                    page.wait_for_timeout(poll_ms)
+                        blocked = not items and looks_blocked(source)
+                        normal_page = any(marker in source.lower() for marker in (
+                            "__next_data__", "aucune annonce", "aucun résultat", "aucun resultat"))
+                        if items or (normal_page and not blocked):
+                            if challenge_notified:
+                                LBC_CAPTCHA_OWNER = None
+                            if challenge_notified:
+                                print(f"[LBC-EXTERNAL] {search_id} : vérification résolue, {len(items)} annonce(s) détectée(s)")
+                            else:
+                                print(f"[LBC-EXTERNAL] {search_id} : {len(items)} annonce(s) détectée(s)")
+                            _label_lbc_page(page, search)
+                            _submit_to_main_loop(_process_lbc_persistent_items(search, items, recovered=challenge_notified))
+                            challenge_notified = False
+                            break
+
+                        if blocked and not challenge_notified:
+                            LBC_CAPTCHA_OWNER = search_id
+                            _label_lbc_page(page, search)
+                            print(f"[HUMAN] {search_id} : vérification/restriction détectée (HTTP {status or 'n/a'}), Brave reste ouvert")
+                            _show_lbc_page(context, page)
+                            _submit_to_main_loop(_notify_lbc_verification_required(
+                                search, challenge=True))
+                            challenge_notified = True
+
+                        if not blocked and not challenge_notified:
+                            # Unknown/empty pages are local diagnostics, never a public alert.
+                            print(f"[LBC-EXTERNAL] {search_id} : page sans annonce lisible ; prochain contrôle normal")
+                            break
+                        page.wait_for_timeout(poll_ms)
+
+                finally:
+                    LBC_CYCLE_LOCK.release()
 
                 if not search_is_active(search):
                     break
@@ -723,6 +778,8 @@ def _lbc_manual_verification_worker(search: dict, config: dict) -> None:
         print(f"[LBC-EXTERNAL] {search_id} : {type(exc).__name__}: {exc}")
         _submit_to_main_loop(_fail_lbc_verification(search, f"{type(exc).__name__}: {str(exc)[:500]}"))
     finally:
+        if LBC_CAPTCHA_OWNER == search_id and not search_is_active(search):
+            LBC_CAPTCHA_OWNER = None
         with LBC_VERIFICATION_LOCK:
             LBC_VERIFICATION_ACTIVE.discard(search_id)
 
@@ -1001,6 +1058,8 @@ async def send_system_alert(channel: discord.TextChannel, search: dict, title: s
 
 
 async def _notify_lbc_verification_required(search: dict, *, challenge=True) -> None:
+    if not challenge:
+        return
     if not search_is_active(search):
         return
     channel = await notification_channel()
@@ -1015,7 +1074,7 @@ async def _notify_lbc_verification_required(search: dict, *, challenge=True) -> 
             "Vérifie la barre des tâches et la session Windows de ce PC (pas celle du téléphone ou d’un autre PC).\n\n"
             "Résous simplement la vérification dans cette fenêtre. Le bot surveille la page en arrière-plan et "
             "reprendra automatiquement dès que les annonces seront de nouveau accessibles.\n\n"
-            "Pendant ce temps, les autres recherches (par exemple Vinted) continuent de fonctionner."
+            "Toutes les autres recherches Leboncoin sont en pause jusqu’à résolution. Vinted continue de fonctionner."
         ),
         timestamp=datetime.now(timezone.utc),
     )
@@ -1126,6 +1185,8 @@ def _submit_to_main_loop(coro) -> None:
 async def run_search(search: dict, *, manual: bool = False) -> tuple[bool, str]:
     if not search_is_active(search):
         return False, "Recherche suspendue ou accès retiré."
+    if lbc_paused(search):
+        return False, "Leboncoin en pause : résous la vérification dans l’onglet Market concerné."
     channel = await notification_channel()
     if channel is None:
         return False, "Salon Discord introuvable"
@@ -1238,7 +1299,7 @@ async def scheduler() -> None:
 
     while not client.is_closed():
         try:
-            enabled = [s for s in SEARCHES if search_is_active(s)]
+            enabled = [s for s in SEARCHES if search_is_active(s) and not lbc_paused(s)]
             now = time.monotonic()
             due = sorted(enabled, key=lambda s: next_due.get(s["id"], now))
             target = next((s for s in due if next_due.get(s["id"], 0) <= now), None)
