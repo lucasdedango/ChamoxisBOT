@@ -2,6 +2,46 @@
 
 Bot Discord pour rechercher des torrents via **Prowlarr (Torznab)**, ajouter les téléchargements dans qBittorrent, puis importer vers Plex.
 
+Le nouveau lancement utilise deux applications indépendantes : `manager/` pour Discord,
+les événements, la supervision et Ollama ; `modules/plex/` pour les recherches,
+téléchargements et imports. Elles communiquent par API HTTP authentifiée.
+
+- [Installation et démarrage Windows](docs/windows.md)
+- [Guide utilisateur et commandes Discord](docs/guide-utilisateur.md)
+- [Module Market autonome : autre bot Discord pour Leboncoin/Vinted](docs/market.md)
+- [Dashboard local et mises à jour par branche](docs/dashboard.md)
+- [Architecture, API et événements](docs/architecture.md)
+- [Bilan de migration et limites](docs/migration.md)
+
+Double-cliquer sur **`dashboard.bat`** pour ouvrir le panneau local sur
+`http://127.0.0.1:8765` : services, téléchargements, recherche, IA, réglages,
+logs et mises à jour GitHub avec choix de branche, aperçu et sauvegarde.
+Il utilise `.venv-manager`; **`start.bat`** lance Plex, le manager et le bot Market dans trois fenêtres distinctes.
+
+Exemple : `/recherchetorrent query:Dune de 2021 en français en 1080p`.
+Le parcours privé identifie l’œuvre, demande les précisions nécessaires et propose un torrent à confirmer.
+`/aide` ouvre le guide interactif ; `/telechargements` affiche tes demandes. Les doublons historiques
+sont remplacés par `/ajoutertorrent`, `/ia` et les outils réservés à `/admin`.
+
+Le mode conversation optionnel interprète les messages commençant par `bot` :
+`bot, trouve Grey’s Anatomy S11`, `bot pourquoi mon dernier téléchargement est bloqué ?`
+ou une simple discussion. La recherche se poursuit en réponse privée via **Continuer en privé**, avec menus et boutons. L'ajout nécessite toujours le bouton **Confirmer l’ajout**.
+Voir le guide Windows pour configurer les salons et activer Message Content Intent.
+Les recherches naturelles privilégient MULTI et les seeds positifs, puis le plus
+petit torrent compatible avec la qualité demandée (1080p par défaut). L’AV1 est proposé uniquement si aucun autre codec compatible n’est trouvé, avec un avertissement de compatibilité.
+Les torrents sans seed positif annoncé servent de repli avec un avertissement sur l’attente possible ; un changement de qualité demande
+un accord distinct de la confirmation d'ajout.
+
+Tests automatisés, depuis la racine du dépôt, avec Python 3.12 :
+
+```bash
+python -m pip install -c constraints.txt -r manager/requirements.txt -r modules/plex/requirements.txt -r tests/requirements.txt
+python -m unittest discover -s tests -v
+```
+
+Les sections suivantes décrivent le lancement historique `bot.py`, conservé pour
+le retour arrière. Ne pas lancer ce bot en parallèle du gestionnaire central.
+
 ## Prérequis
 - Python 3.10+
 - Bot Discord
@@ -52,3 +92,11 @@ interaction Discord.
 - Erreur `PROWLARR_API_KEY manquant` : renseigner la variable dans `.env`.
 - 401/403: vérifier URL/API key Prowlarr et accessibilité réseau.
 - Pas de résultats: vérifier l’indexer C411 dans Prowlarr.
+
+### TMDb et recommandations Plex
+
+Voir [la configuration TMDb/Plex](docs/tmdb-plex.md) pour identifier les œuvres, choisir entre homonymes et consulter les films/séries réellement disponibles. TMDb est une API en ligne et ne nécessite aucune installation locale.
+
+Pour les résultats filtrés, interactions Discord expirées et déplacements longs entre disques, voir [le diagnostic recherche/import](docs/diagnostic-recherche-import.md).
+
+Voir [le parcours privé et le nettoyage des logs](docs/recherche-privee.md) pour les menus Discord et le bouton du dashboard.
